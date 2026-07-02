@@ -4,25 +4,19 @@
    Este es el ÚNICO archivo que necesitas editar para poner la app en línea.
    ===================================================================== */
 
-/* 1) FIREBASE — pega aquí la configuración de tu proyecto.
-   (La consigues en: consola de Firebase → Configuración del proyecto →
-    Tus apps → SDK de Firebase → Configuración. Ver GUIA_INSTALACION.md)
+/* 1) FIREBASE — configuración del proyecto "pueblo-cafe".
+   Estas claves web son públicas por diseño (van en el frontend); la
+   seguridad la dan las reglas de la base de datos + la autenticación.   */
 
-   Mientras esté en `null`, la app funciona en MODO LOCAL:
-   todo se guarda solo en el dispositivo, sin sincronización.        */
-
-const FIREBASE_CONFIG = null;
-/* Ejemplo de cómo debe quedar (con TUS valores):
 const FIREBASE_CONFIG = {
-  apiKey: "AIzaSy...",
+  apiKey: "AIzaSyAmB1Iwg3f2HuMlVW7gIFTcUH_y7lfRWRY",
   authDomain: "pueblo-cafe.firebaseapp.com",
   databaseURL: "https://pueblo-cafe-default-rtdb.firebaseio.com",
   projectId: "pueblo-cafe",
-  storageBucket: "pueblo-cafe.appspot.com",
-  messagingSenderId: "1234567890",
-  appId: "1:1234567890:web:abc123"
+  storageBucket: "pueblo-cafe.firebasestorage.app",
+  messagingSenderId: "692760524460",
+  appId: "1:692760524460:web:b90b40f217c2683f3ad109"
 };
-*/
 
 /* 2) USUARIOS Y PINES — cada persona entra con su PIN de 4 dígitos.
    Roles disponibles:
