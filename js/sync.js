@@ -44,7 +44,7 @@ function clean(obj){ return JSON.parse(JSON.stringify(obj)); }
 
 /* ------------------------- MODO LOCAL ------------------------- */
 function LocalStore(){
-  let data = { orders:[], compras:[], tareas:clean(SEED_TAREAS), recetas:clean(SEED_RECETAS), caja:null, seq:1 };
+  let data = { orders:[], compras:[], tareas:clean(SEED_TAREAS), recetas:clean(SEED_RECETAS), caja:null, modo:'real', historial:[], seq:1 };
   try{
     const s = localStorage.getItem('pc_demo');
     if(s){
@@ -54,6 +54,8 @@ function LocalStore(){
       data.tareas  = (old.tareas  && old.tareas.length)  ? old.tareas  : data.tareas;
       data.recetas = (old.recetas && old.recetas.length) ? old.recetas : data.recetas;
       data.caja    = old.caja || null;
+      data.modo    = old.modo || 'real';
+      data.historial = old.historial || [];
       data.seq     = old.seq || (Math.max(0, ...data.orders.map(o=>o.id)) + 1);
       // completar recetas de jugos si faltan (migración)
       SEED_RECETAS.forEach(r => { if(!data.recetas.some(x => x.nombre.toLowerCase() === r.nombre.toLowerCase())) data.recetas.push(clean(r)); });
@@ -73,6 +75,14 @@ function LocalStore(){
     clearOrders(){ data.orders = []; data.seq = 1; persist(); notify(); },
     saveList(name, arr){ data[name] = arr; persist(); notify(); },
     saveCaja(c){ data.caja = c; persist(); notify(); },
+    saveModo(m){ data.modo = m; persist(); notify(); },
+    deletePractica(){ data.orders = data.orders.filter(o=>!o.practica); persist(); notify(); },
+    archivarDia(){
+      const reales = data.orders.filter(o=>!o.practica);
+      data.historial = (data.historial || []).concat(reales);
+      data.orders = []; data.seq = 1;
+      persist(); notify();
+    },
   };
 }
 
@@ -80,7 +90,7 @@ function LocalStore(){
 function FirebaseStore(cfg){
   firebase.initializeApp(cfg);
   const db = firebase.database();
-  const data = { orders:[], compras:[], tareas:[], recetas:[], caja:null };
+  const data = { orders:[], compras:[], tareas:[], recetas:[], caja:null, modo:'real', historial:[] };
   let notify = () => {};
 
   function listen(){
@@ -97,6 +107,12 @@ function FirebaseStore(cfg){
       });
     });
     db.ref('caja').on('value', snap => { data.caja = snap.val() || null; notify(); });
+    db.ref('modo').on('value', snap => { data.modo = snap.val() || 'real'; notify(); });
+    db.ref('historial').on('value', snap => {
+      const v = snap.val();
+      data.historial = Array.isArray(v) ? v.filter(Boolean) : Object.values(v || {});
+      notify();
+    });
     // sembrar tareas y recetas la primera vez
     db.ref('tareas').once('value', s => { if(!s.exists()) db.ref('tareas').set(clean(SEED_TAREAS)); });
     db.ref('recetas').once('value', s => { if(!s.exists()) db.ref('recetas').set(clean(SEED_RECETAS)); });
@@ -123,6 +139,20 @@ function FirebaseStore(cfg){
     clearOrders(){ data.orders = []; notify(); db.ref('orders').remove(); db.ref('seq').set(0); },
     saveList(name, arr){ data[name] = arr; notify(); db.ref(name).set(clean(arr)); },
     saveCaja(c){ data.caja = c; notify(); db.ref('caja').set(clean(c)); },
+    saveModo(m){ data.modo = m; notify(); db.ref('modo').set(m); },
+    deletePractica(){
+      const reales = data.orders.filter(o=>!o.practica);
+      data.orders = reales; notify();
+      const obj = {}; reales.forEach(o=>obj[o.id] = clean(o));
+      db.ref('orders').set(obj);
+    },
+    archivarDia(){
+      const reales = data.orders.filter(o=>!o.practica).map(clean);
+      const hist = (data.historial || []).concat(reales);
+      data.historial = hist; data.orders = []; notify();
+      db.ref('historial').set(hist.map(clean));
+      db.ref('orders').remove(); db.ref('seq').set(0);
+    },
   };
 }
 

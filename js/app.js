@@ -7,7 +7,7 @@
 /* menú y modificadores: ver js/menu.js */
 
 /* ================= ESTADO (gestionado por js/sync.js) ================= */
-let state = { orders:[], compras:[], tareas:[], recetas:[], caja:null };
+let state = { orders:[], compras:[], tareas:[], recetas:[], caja:null, modo:'real', historial:[] };
 let user = null;
 try{ const u = localStorage.getItem('pc_user'); if(u) user = JSON.parse(u); }catch(e){}
 
@@ -28,12 +28,13 @@ let cuentaId = null;        // comanda mostrada en "cuenta"
 let recetaModal = null;     // receta abierta desde cocina
 let armAnular = null;       // id de comanda con anulación armada (doble toque)
 let armAnularItem = null;   // {oid, uid} de ítem con anulación armada
-let armReset = false;       // reinicio armado (doble toque)
 let selEntrega = new Set(); // uids marcados para entrega conjunta
 let addTargetId = null;     // pedido al que se le están agregando ítems (null = pedido nuevo)
 let splitModal = null;      // división de cuenta {oid, personas:[], asign:{}, nextId}
 let cierreMode = false;     // caja en modo cierre (mostrando inputs de conteo)
 let boletaEdit = false;     // en la cuenta: formulario de boleta desplegado
+let armBorrarP = false;     // borrar pedidos de práctica (doble toque)
+let armArchivar = false;    // archivar el día (doble toque)
 
 let toastTimer = null;
 function toast(msg){
@@ -83,6 +84,20 @@ function render(){
 function dayKey(d){ d = d ? new Date(d) : new Date(); return d.getFullYear() + '-' + (d.getMonth()+1) + '-' + d.getDate(); }
 function cajaHoyAbierta(){ const c = state.caja; return !!(c && c.estado === 'abierta' && c.fecha === dayKey()); }
 
+/* ================= MODO PRÁCTICA / REAL ================= */
+function enPractica(){ return state.modo === 'practica'; }
+function esAdmin(){ return user && user.rol === 'admin'; }
+function modoBanner(){
+  if(!enPractica()) return '';
+  return `<div class="practbanner">🧪 MODO PRÁCTICA · los pedidos son de entrenamiento y NO se guardan como ventas</div>`;
+}
+function setModo(m){
+  if(!esAdmin()){ toast('Solo el administrador puede cambiar el modo'); return; }
+  store.saveModo(m);
+  toast(m==='practica' ? '🧪 Modo práctica activado' : '✅ Pedidos reales activados');
+  render();
+}
+
 /* ================= PAGOS (soporta pago simple y dividido) ================= */
 function pagosDe(o){
   if(Array.isArray(o.pagos)) return o.pagos;
@@ -93,7 +108,7 @@ function pagadoDe(o){ return pagosDe(o).reduce((s,p)=>s+(p.monto||0),0); }
 function pendienteDe(o){ return Math.max(0, orderTotal(o) - pagadoDe(o)); }
 function estaPagado(o){ return orderTotal(o) > 0 && pendienteDe(o) < 0.005; }
 function ventasMetodo(metodo){
-  return state.orders.filter(o=>!o.anulada).reduce((s,o)=>
+  return state.orders.filter(o=>!o.anulada && !o.practica).reduce((s,o)=>
     s + pagosDe(o).filter(p=>p.metodo===metodo).reduce((a,p)=>a+(p.monto||0),0), 0);
 }
 
@@ -107,7 +122,7 @@ function rHeader(title, pill){
     <button class="back" onclick="go('home')">←</button>
     <h1>${title}</h1><span class="pill">${pill}</span>
   </header>
-  <div class="demo-banner">${bannerTxt()}</div>`;
+  <div class="demo-banner">${bannerTxt()}</div>${modoBanner()}`;
 }
 
 const VISTAS = {
@@ -124,7 +139,7 @@ function rHome(){
     const style = V.cls ? '' : ' style="background:var(--cafemed)"';
     return `<button class="rolbtn ${V.cls}"${style} onclick="${V.fn}">${V.t}<small>${V.s}</small></button>`;
   }).join('');
-  return `<div class="demo-banner">${bannerTxt()}</div><main>
+  return `<div class="demo-banner">${bannerTxt()}</div>${modoBanner()}<main>
     <div class="home-logo"><div class="circ">Pueblo<small>CAFE BAR</small></div></div>
     <div class="home-sub">Hola, <b>${esc(user.nombre)}</b> · ${esc(user.rol)}</div>
     ${botones}
@@ -163,8 +178,8 @@ function logout(){ user = null; pinBuf = ''; try{ localStorage.removeItem('pc_us
 
 /* ---------- MESERO ---------- */
 function rMesero(){
-  // bloqueo: sin caja abierta no se atiende
-  if(!cajaHoyAbierta()){
+  // bloqueo: sin caja abierta no se atiende (excepto en modo práctica)
+  if(!enPractica() && !cajaHoyAbierta()){
     const irCaja = vistasDe(user.rol).includes('registro')
       ? `<button class="rolbtn rol-caja" onclick="go('registro')">Ir a abrir caja</button>` : '';
     return rHeader('Pedidos — Mesero','PEDIDOS') + `<main>
@@ -261,7 +276,7 @@ function rOrdMesero(o){
   const col = colorFor(o);
   return `<div class="ordcard" style="border:2.5px solid ${col};border-left:9px solid ${col};background:${col}14">
     <div class="ohead" style="background:${col};color:#fff;margin:-12px -14px 10px;padding:10px 14px;border-radius:6px 6px 0 0;font-size:14.5px">
-      <span>#${o.id} · ${tipoTxt(o)}</span><span>${hhmm(o.ts)} · hace ${elapsedMin(o.ts, Date.now())} min</span></div>${items}
+      <span>#${o.id} · ${tipoTxt(o)} ${practTag(o)}</span><span>${hhmm(o.ts)} · hace ${elapsedMin(o.ts, Date.now())} min</span></div>${items}
     <button class="stbtn st-preparando" style="margin-top:8px;width:100%" onclick="startAgregar(${o.id})">➕ Agregar ítems a este pedido</button>
     ${listos.length>1?`<button class="stbtn ${allSel?'st-pendiente':'st-preparando'}" style="margin-top:8px" onclick="toggleAllListos(${o.id})">${allSel?'Quitar selección':'☑ Seleccionar todos los listos ('+listos.length+')'}</button>`:''}
     ${nSel>1?`<button class="entregarSel" onclick="openChkMulti(${o.id})">Entregar los ${nSel} marcados juntos ✓</button>`:''}
@@ -271,7 +286,7 @@ function rOrdMesero(o){
 function startAgregar(oid){ addTargetId = oid; cart = []; query = ''; tab = MENU[0].cat; toast('Agregando ítems al pedido #'+oid); render(); }
 function cancelAgregar(){ addTargetId = null; cart = []; render(); }
 function agregarItems(){
-  if(!cajaHoyAbierta()){ toast('Abre la caja primero'); return; }
+  if(!enPractica() && !cajaHoyAbierta()){ toast('Abre la caja primero'); return; }
   if(!cart.length) return;
   const o = state.orders.find(x=>x.id===addTargetId);
   if(!o){ addTargetId = null; render(); return; }
@@ -313,6 +328,7 @@ function anularItem(oid, uid){
 function tipoTxt(o){
   return (o.tipo==='llevar'?'🥡 LLEVAR · ':'') + esc(o.mesa||'—');
 }
+function practTag(o){ return o.practica ? `<span class="practag">🧪 PRÁCTICA</span>` : ''; }
 function setTipo(t){ tipo = t; mesa = ''; render(); }
 /* ---------- SELECCIÓN DE MESA ---------- */
 function ordersDeMesa(nombre){
@@ -439,20 +455,20 @@ function setTab(c){ tab = c; render(); }
 
 let _sending = false;   // candado: evita crear comandas duplicadas/vacías por doble toque o lag
 async function sendOrder(){
-  if(!cajaHoyAbierta()){ toast('Abre la caja primero para atender'); return; }
+  if(!enPractica() && !cajaHoyAbierta()){ toast('Abre la caja primero para atender'); return; }
   if(_sending) return;                     // ya hay un envío en curso: ignora toques extra
   if(!cart.length) return;
   _sending = true;
   // capturar la comanda ANTES de la espera de red; así, aunque llegue otro toque,
   // no se puede crear una comanda vacía ni perder la actual
   const cartSnap = cart.slice();
-  const mesaSnap = mesa.trim(), tipoSnap = tipo;
+  const mesaSnap = mesa.trim(), tipoSnap = tipo, practicaSnap = enPractica();
   cart = []; mesa = ''; tipo = 'mesa';     // limpia la UI de inmediato
   render();
   try{
     const id = await store.nextOrderId();
     const o = { id, mesa: mesaSnap, tipo: tipoSnap, ts: Date.now(),
-      mesero: user ? user.nombre : '',
+      mesero: user ? user.nombre : '', practica: practicaSnap,
       items: cartSnap.map((it,i)=>({uid:i+1, ...it, estado:'pendiente'})) };
     store.saveOrder(o);
     toast('Comanda #' + o.id + ' enviada a cocina ✓');
@@ -503,7 +519,7 @@ function rCocina(){
     }).join('');
     if(!items) return '';
     const espera = elapsedMin(o.ts, Date.now());
-    return `<div class="ordcard ${station}"><div class="ohead"><span>#${o.id} · ${tipoTxt(o)}</span><span>${hhmm(o.ts)} · hace ${espera} min</span></div>${items}</div>`;
+    return `<div class="ordcard ${station}"><div class="ohead"><span>#${o.id} · ${tipoTxt(o)} ${practTag(o)}</span><span>${hhmm(o.ts)} · hace ${espera} min</span></div>${items}</div>`;
   }).join('');
   // banner de retrasados: ítems rápidos con más de 10 min sin estar listos
   let nLate = 0;
@@ -678,7 +694,8 @@ function deliver(){
 /* ---------- REGISTRO / CAJA ---------- */
 function rRegistro(){
   const os = state.orders.slice().reverse();
-  const validas = state.orders.filter(o=>!o.anulada);
+  const validas = state.orders.filter(o=>!o.anulada && !o.practica);   // ventas reales
+  const nPract = state.orders.filter(o=>o.practica && !o.anulada).length;
   const tot = validas.reduce((s,o)=>s+orderTotal(o),0);
   const totEf = ventasMetodo('efectivo'), totYa = ventasMetodo('yape');
   const sinPago = tot - totEf - totYa;
@@ -699,7 +716,7 @@ function rRegistro(){
     }
     const sal = salioEn(o);
     const anulados = o.items.filter(i=>i.estado==='anulado').length;
-    return `<div class="regcard"><b>#${o.id}</b> · ${tipoTxt(o)}${o.mesero?' · '+esc(o.mesero):''} · ${new Date(o.ts).toLocaleDateString()} ${hhmm(o.ts)}
+    return `<div class="regcard${o.practica?' practcard':''}"><b>#${o.id}</b> · ${tipoTxt(o)} ${practTag(o)}${o.mesero?' · '+esc(o.mesero):''} · ${new Date(o.ts).toLocaleDateString()} ${hhmm(o.ts)}
       ${badge}${pagoBadge}<br>
       <span style="color:var(--cafemed)">${o.items.map(i=>(i.estado==='anulado'?'<s>':'')+i.qty+'× '+esc(i.name)+(i.estado==='anulado'?'</s>':'')).join(', ')}</span>
       ${anulados && !o.anulada?`<div style="font-size:11.5px;color:var(--rojo)">${anulados} ítem(s) anulado(s), descontado(s) del total</div>`:''}
@@ -708,20 +725,43 @@ function rRegistro(){
         ${!o.anulada?`<button class="stbtn st-preparando" style="float:right" onclick="cuentaId=${o.id};render()">Ver cuenta 🧾</button>`:''}
       </div></div>`;
   }).join('');
+  const anuladas = state.orders.filter(o=>o.anulada).length;
+  const nHist = (state.historial||[]).length;
+  // control de modo (solo admin)
+  const modoCtrl = esAdmin()
+    ? `<div class="modoctrl">
+        <div class="modoc-t">Modo de trabajo: <b>${enPractica()?'🧪 PRÁCTICA':'✅ PEDIDOS REALES'}</b></div>
+        ${enPractica()
+          ? `<button class="stbtn st-listo" onclick="setModo('real')">Volver a pedidos reales</button>`
+          : `<button class="stbtn" style="background:var(--cafemed)" onclick="setModo('practica')">🧪 Activar modo práctica (entrenamiento)</button>`}
+        <div class="modoc-h">En modo práctica los pedidos llegan a la cocina para entrenar, pero no cuentan como ventas ni en la caja.</div>
+      </div>`
+    : (enPractica()?`<div class="modoc-h" style="text-align:center;margin:6px 0">🧪 Modo práctica activo (lo cambia el administrador).</div>`:'');
   return rHeader('Registro del día','CAJA') + `<main>
     ${rCaja()}
-    <div class="regtot"><span>${validas.length} comanda(s)${state.orders.length>validas.length?` · ${state.orders.length-validas.length} anulada(s)`:''}</span><span>Total: ${money(tot)}</span></div>
+    ${modoCtrl}
+    <div class="regtot"><span>${validas.length} venta(s)${anuladas?` · ${anuladas} anulada(s)`:''}${nPract?` · ${nPract} práctica`:''}</span><span>Total: ${money(tot)}</span></div>
     ${tot>0?`<div class="regtot" style="background:var(--cafemed);font-size:13px"><span>💵 Efectivo: ${money(totEf)}</span><span>📱 Yape: ${money(totYa)}</span><span>Sin cobrar: ${money(sinPago)}</span></div>`:''}
     ${cards || '<div class="empty">Aún no hay comandas registradas.</div>'}
-    ${state.orders.length?`<button class="csvbtn" onclick="csv()">Descargar CSV para cuadre</button>
-    <button class="csvbtn" style="background:${armReset?'#7a1f14':'var(--rojo)'}" onclick="resetDemo()">${armReset?'¿Seguro? Toca de nuevo para borrar todo':'Reiniciar demo'}</button>`:''}
+    ${state.orders.length?`<button class="csvbtn" onclick="csv()">Descargar CSV para cuadre</button>`:''}
+    ${nHist?`<button class="csvbtn" style="background:var(--verde)" onclick="csvHistorial()">📦 Descargar historial archivado (${nHist})</button>`:''}
+    ${esAdmin() && nPract?`<button class="csvbtn" style="background:${armBorrarP?'#7a1f14':'var(--rojo)'}" onclick="borrarPractica()">${armBorrarP?'¿Seguro? Toca de nuevo — borrar SOLO prácticas':'🧪 Borrar pedidos de práctica ('+nPract+')'}</button>`:''}
+    ${esAdmin() && validas.length?`<button class="csvbtn" style="background:${armArchivar?'#7a1f14':'var(--acento)'}" onclick="archivarDia()">${armArchivar?'¿Seguro? Toca de nuevo — archivar y empezar limpio':'📦 Cerrar y archivar el día'}</button>`:''}
   </main>`;
 }
-function resetDemo(){
-  if(!armReset){ armReset = true; render(); setTimeout(()=>{ if(armReset){armReset=false; render();} }, 3500); return; }
+function borrarPractica(){
+  if(!esAdmin()){ toast('Solo el administrador'); return; }
+  if(!armBorrarP){ armBorrarP = true; render(); setTimeout(()=>{ if(armBorrarP){armBorrarP=false; render();} }, 3500); return; }
   selEntrega.clear();
-  armReset = false; store.clearOrders(); toast('Comandas de prueba borradas (compras, tareas y recetas se conservan)'); render();
+  armBorrarP = false; store.deletePractica(); toast('Pedidos de práctica borrados ✓'); render();
 }
+function archivarDia(){
+  if(!esAdmin()){ toast('Solo el administrador'); return; }
+  if(!armArchivar){ armArchivar = true; render(); setTimeout(()=>{ if(armArchivar){armArchivar=false; render();} }, 3500); return; }
+  selEntrega.clear();
+  armArchivar = false; store.archivarDia(); toast('Día archivado — se guardó en el historial ✓'); render();
+}
+function csvHistorial(){ csvDe(state.historial || [], 'historial_pueblo_cafe.csv'); }
 function rCuenta(){
   const o = state.orders.find(x=>x.id===cuentaId);
   if(!o) return '';
@@ -892,22 +932,24 @@ function entregarTodo(oid){
   o.items.forEach(i=>{ if(i.estado!=='anulado'){ if(!i.tsListo) i.tsListo = Date.now(); i.estado='entregado'; i.tsEnt = Date.now(); } });
   store.saveOrder(o); toast('Comanda #'+oid+' cerrada'); render();
 }
-function csv(){
-  let rows = [['Comanda','Tipo','Mesa/Cliente','Mesero','Fecha','Hora','Producto','Cant','Detalle','Precio','Subtotal','Estado','MinSalida','Pagos']];
-  state.orders.forEach(o=>{
+function csvDe(orders, filename){
+  let rows = [['Comanda','Tipo','Mesa/Cliente','Mesero','Modo','Fecha','Hora','Producto','Cant','Detalle','Precio','Subtotal','Estado','MinSalida','Pagos','BoletaDNI','BoletaNombre','BoletaContacto']];
+  (orders||[]).forEach(o=>{
     const pagosTxt = pagosDe(o).map(p=>p.metodo+':'+p.monto).join(' | ');
+    const b = o.boleta || {};
     o.items.forEach(i=>{
       const d = new Date(o.ts);
-      rows.push([o.id, o.tipo==='llevar'?'Llevar':'Mesa', o.mesa||'', o.mesero||'', d.toLocaleDateString(), hhmm(o.ts), i.name, i.qty,
+      rows.push([o.id, o.tipo==='llevar'?'Llevar':'Mesa', o.mesa||'', o.mesero||'', o.practica?'practica':'real', d.toLocaleDateString(), hhmm(o.ts), i.name, i.qty,
         modsTxt(i).replace(/,/g,';'), i.price, i.price*i.qty, o.anulada?'anulado':i.estado,
-        i.tsListo?elapsedMin(o.ts,i.tsListo):'', pagosTxt]);
+        i.tsListo?elapsedMin(o.ts,i.tsListo):'', pagosTxt, b.dni||'', (b.nombre||'').replace(/,/g,';'), b.contacto||'']);
     });
   });
   const txt = rows.map(r=>r.join(',')).join('\n');
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob(['﻿'+txt], {type:'text/csv;charset=utf-8'}));
-  a.download = 'comandas_pueblo_cafe.csv'; a.click();
+  a.download = filename; a.click();
 }
+function csv(){ csvDe(state.orders, 'comandas_pueblo_cafe.csv'); }
 
 /* ---------- GESTIÓN DEL CAFÉ ---------- */
 let gtab = 'compras';   // compras | tareas | recetas
@@ -1015,12 +1057,13 @@ function addReceta(){
 function delReceta(id){ state.recetas = state.recetas.filter(x=>x.id!==id); store.saveList('recetas', state.recetas); render(); }
 
 /* ---------- NAV ---------- */
-function go(v){ view = v; modal = null; chkModal = null; cuentaId = null; recetaModal = null; splitModal = null; armAnular = null; armAnularItem = null; armReset = false; addTargetId = null; cierreMode = false; boletaEdit = false; render(); }
+function go(v){ view = v; modal = null; chkModal = null; cuentaId = null; recetaModal = null; splitModal = null; armAnular = null; armAnularItem = null; armBorrarP = false; armArchivar = false; addTargetId = null; cierreMode = false; boletaEdit = false; render(); }
 window.go = go; window.goCocina = goCocina; window.setTab = setTab; window.openItem = openItem;
 window.pick = pick; window.addCart = addCart; window.rmCart = rmCart; window.sendOrder = sendOrder;
 window.setEstado = setEstado; window.openChk = openChk; window.deliver = deliver; window.csv = csv;
 window.setTipo = setTipo; window.openEdit = openEdit; window.splitCart = splitCart; window.anular = anular;
-window.resetDemo = resetDemo; window.entregarTodo = entregarTodo; window.doSearch = doSearch;
+window.entregarTodo = entregarTodo; window.doSearch = doSearch;
+window.setModo = setModo; window.borrarPractica = borrarPractica; window.archivarDia = archivarDia; window.csvHistorial = csvHistorial;
 window.toggleEntrega = toggleEntrega; window.anularItem = anularItem; window.openChkMulti = openChkMulti;
 window.setPago = setPago; window.setGtab = setGtab;
 window.addCompra = addCompra; window.toggleCompra = toggleCompra; window.delCompra = delCompra; window.clearCompras = clearCompras;

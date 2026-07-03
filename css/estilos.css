@@ -158,3 +158,13 @@
 .boletabox{border:2px solid var(--cafemed); border-radius:12px; padding:12px; margin:12px 0; background:var(--crema);}
 .boletabox.saved{border-color:var(--verde); background:#F0F8F1;}
 .boletabox .det{font-size:12.5px; color:var(--cafemed); margin-top:3px;}
+
+/* ===== Modo práctica / real ===== */
+.practbanner{background:#7A4FA0; color:#fff; text-align:center; font-weight:800; font-size:13px; padding:8px 12px; letter-spacing:.3px;}
+.practag{display:inline-block; background:#7A4FA0; color:#fff; font-size:10.5px; font-weight:800; padding:2px 7px; border-radius:8px; vertical-align:middle; margin-left:4px;}
+.regcard.practcard{border-left:6px solid #7A4FA0; background:#F7F2FB;}
+.modoctrl{border:2px dashed #7A4FA0; border-radius:12px; padding:12px; margin-bottom:12px; background:#F7F2FB;}
+.modoc-t{font-size:14px; color:var(--cafe); margin-bottom:8px;}
+.modoc-t b{color:#5E3A82;}
+.modoctrl .stbtn{width:100%; margin:0;}
+.modoc-h{font-size:11.5px; color:var(--cafemed); margin-top:8px; line-height:1.4;}
