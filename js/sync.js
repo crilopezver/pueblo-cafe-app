@@ -29,6 +29,9 @@ const SEED_RECETAS = [
 function normOrder(o){
   if(!o) return null;
   o.items = Array.isArray(o.items) ? o.items.filter(Boolean) : Object.values(o.items || {});
+  // descartar comandas vacías (p. ej. las generadas por un doble envío durante un cuelgue):
+  // sin ítems y sin pagos no representan una venta real
+  if(!o.items.length && !(o.pagos && (Array.isArray(o.pagos) ? o.pagos.length : Object.keys(o.pagos).length))) return null;
   o.items.forEach(it => { it.mods = it.mods || {}; it.notas = it.notas || ''; });
   o.mesa = o.mesa || ''; o.tipo = o.tipo || 'mesa';
   if(o.pagos){

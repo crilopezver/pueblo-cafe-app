@@ -437,16 +437,33 @@ function addCart(){
 function rmCart(i){ cart.splice(i,1); render(); }
 function setTab(c){ tab = c; render(); }
 
+let _sending = false;   // candado: evita crear comandas duplicadas/vacías por doble toque o lag
 async function sendOrder(){
   if(!cajaHoyAbierta()){ toast('Abre la caja primero para atender'); return; }
+  if(_sending) return;                     // ya hay un envío en curso: ignora toques extra
   if(!cart.length) return;
-  const id = await store.nextOrderId();
-  const o = { id, mesa: mesa.trim(), tipo, ts: Date.now(), mesero: user ? user.nombre : '',
-    items: cart.map((it,i)=>({uid:i+1, ...it, estado:'pendiente'})) };
-  store.saveOrder(o);
-  cart = []; mesa = ''; tipo = 'mesa';
-  toast('Comanda #' + o.id + ' enviada a cocina ✓');
+  _sending = true;
+  // capturar la comanda ANTES de la espera de red; así, aunque llegue otro toque,
+  // no se puede crear una comanda vacía ni perder la actual
+  const cartSnap = cart.slice();
+  const mesaSnap = mesa.trim(), tipoSnap = tipo;
+  cart = []; mesa = ''; tipo = 'mesa';     // limpia la UI de inmediato
   render();
+  try{
+    const id = await store.nextOrderId();
+    const o = { id, mesa: mesaSnap, tipo: tipoSnap, ts: Date.now(),
+      mesero: user ? user.nombre : '',
+      items: cartSnap.map((it,i)=>({uid:i+1, ...it, estado:'pendiente'})) };
+    store.saveOrder(o);
+    toast('Comanda #' + o.id + ' enviada a cocina ✓');
+  }catch(e){
+    // si falla la red, devolver la comanda al carrito para no perderla
+    cart = cartSnap; mesa = mesaSnap; tipo = tipoSnap;
+    toast('No se pudo enviar la comanda, reintenta');
+  }finally{
+    _sending = false;
+    render();
+  }
 }
 function pendingOrders(){
   return state.orders.filter(o=>!o.anulada && o.items.some(it=>it.estado!=='entregado')).slice().reverse();
