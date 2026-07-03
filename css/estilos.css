@@ -136,3 +136,25 @@
 .cronocard.run .cronot{color:var(--verde);}
 .cronobtns{display:flex; gap:6px;}
 .cronobtns .stbtn{flex:1; margin:0;}
+
+/* ===== Selección de mesa (clicable) ===== */
+.mesahint{font-size:13px; color:var(--cafemed); margin:4px 0 8px;}
+.mesagrid{display:grid; grid-template-columns:repeat(auto-fill,minmax(96px,1fr)); gap:10px; margin-bottom:8px;}
+.mesabtn{display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px;
+  border:2px solid #C9BA8E; border-radius:14px; padding:16px 8px; background:var(--blanco);
+  font-size:15px; font-weight:800; color:var(--cafe); cursor:pointer; min-height:74px;}
+.mesabtn small{font-size:11px; font-weight:700;}
+.mesabtn.free{border-color:var(--verde);} 
+.mesabtn.free small{color:var(--verde);}
+.mesabtn.occ{border-color:var(--rojo); background:#FBEEEC;}
+.mesabtn.occ small{color:var(--rojo);}
+.mesabtn.sel{background:var(--cafe); color:#fff; border-color:var(--cafe);}
+.mesabtn.sel small{color:#fff;}
+.mesasel{background:var(--crema); border:1.5px solid #D8CBA4; border-radius:10px; padding:10px 12px;
+  font-size:15px; color:var(--cafe); margin-bottom:10px;}
+.linklike{background:none; border:none; color:var(--azul); font-weight:700; font-size:13px; text-decoration:underline; cursor:pointer; padding:0 4px;}
+
+/* ===== Boleta / datos de facturación ===== */
+.boletabox{border:2px solid var(--cafemed); border-radius:12px; padding:12px; margin:12px 0; background:var(--crema);}
+.boletabox.saved{border-color:var(--verde); background:#F0F8F1;}
+.boletabox .det{font-size:12.5px; color:var(--cafemed); margin-top:3px;}

@@ -15,8 +15,12 @@ let view = 'home';          // home | mesero | cocina | registro
 let station = null;         // dulces | salados
 let tab = MENU[0].cat;
 let cart = [];              // items de la comanda en curso
-let mesa = '';
+let mesa = '';              // mesa seleccionada (tipo mesa) o nombre del cliente (tipo llevar)
 let tipo = 'mesa';          // mesa | llevar
+// Lista de mesas (5 por defecto). Se puede sobreescribir con MESAS_CONFIG en js/config.js
+let mesasList = (typeof MESAS_CONFIG !== 'undefined' && Array.isArray(MESAS_CONFIG) && MESAS_CONFIG.length)
+  ? MESAS_CONFIG.slice()
+  : Array.from({length:5}, (_,i)=>'Mesa ' + (i+1));
 let query = '';             // texto del buscador
 let modal = null;           // {item, qty, sel:{}, notas, editIdx?}
 let chkModal = null;        // {orderId, itemUid}
@@ -29,6 +33,7 @@ let selEntrega = new Set(); // uids marcados para entrega conjunta
 let addTargetId = null;     // pedido al que se le están agregando ítems (null = pedido nuevo)
 let splitModal = null;      // división de cuenta {oid, personas:[], asign:{}, nextId}
 let cierreMode = false;     // caja en modo cierre (mostrando inputs de conteo)
+let boletaEdit = false;     // en la cuenta: formulario de boleta desplegado
 
 let toastTimer = null;
 function toast(msg){
@@ -185,19 +190,31 @@ function rMesero(){
     </div>`).join('');
   const tot = cart.reduce((s,it)=>s+it.price*it.qty,0);
   const pend = pendingOrders();
-  const encabezado = enAgregar
-    ? `<div class="latebanner" style="animation:none;background:var(--verde)">➕ Agregando ítems al pedido #${addTargetId} · ${tipoTxt(oAdd)}
-        <button class="cls" style="color:#fff;margin:6px 0 0" onclick="cancelAgregar()">Cancelar</button></div>`
-    : `<div class="tabs" style="padding-bottom:6px">
+  let encabezado;
+  if(enAgregar){
+    encabezado = `<div class="latebanner" style="animation:none;background:var(--verde)">➕ Agregando ítems al pedido #${addTargetId} · ${tipoTxt(oAdd)}
+        <button class="cls" style="color:#fff;margin:6px 0 0" onclick="cancelAgregar()">Cancelar</button></div>`;
+  } else {
+    const tabs = `<div class="tabs" style="padding-bottom:6px">
         <button class="${tipo==='mesa'?'act':''}" onclick="setTipo('mesa')">🍽 Para mesa</button>
         <button class="${tipo==='llevar'?'act':''}" onclick="setTipo('llevar')">🥡 Para llevar</button>
-      </div>
-      <div class="fieldrow"><input id="mesa" placeholder="${tipo==='mesa'?'Mesa (ej. Mesa 3)':'Nombre del cliente'}" value="${esc(mesa)}" oninput="mesa=this.value"></div>`;
+      </div>`;
+    let sel;
+    if(tipo==='llevar'){
+      sel = `<div class="fieldrow"><input id="mesa" placeholder="Nombre del cliente" value="${esc(mesa)}" oninput="mesa=this.value"></div>`;
+    } else if(mesa){
+      sel = `<div class="mesasel">🍽 Mesa: <b>${esc(mesa)}</b> <button class="linklike" onclick="pickMesa('')">cambiar mesa</button></div>`;
+    } else {
+      sel = `<div class="mesahint">Selecciona una mesa para empezar la comanda:</div>${rMesaSelector()}`;
+    }
+    encabezado = tabs + sel;
+  }
+  // sólo se puede tomar la comanda si: se están agregando ítems, es para llevar, o ya hay mesa elegida
+  const puedeOrdenar = enAgregar || tipo==='llevar' || !!mesa;
   const accion = enAgregar
     ? `<button class="sendbtn" onclick="agregarItems()">Agregar al pedido #${addTargetId} · ${money(tot)}</button>`
     : `<button class="sendbtn" onclick="sendOrder()">Enviar a cocina · ${money(tot)}</button>`;
-  return rHeader('Pedidos — Mesero','PEDIDOS') + `<main>
-    ${encabezado}
+  const zonaComanda = puedeOrdenar ? `
     <div class="srchrow">
       <input id="buscar" type="search" placeholder="🔍 Buscar producto (ej. fresa, alitas, mojito…)" value="${esc(query)}" oninput="doSearch(this.value)">
       <button class="clr" onclick="document.getElementById('buscar').value='';doSearch('')">✕</button>
@@ -207,10 +224,13 @@ function rMesero(){
       <div class="tabs">${cats}</div>
       ${prods}
     </div>
-    ${cart.length?`<div class="h2s">${enAgregar?'Ítems a agregar':'Comanda en curso'}</div>${cartItems}${accion}`:''}
+    ${cart.length?`<div class="h2s">${enAgregar?'Ítems a agregar':'Comanda en curso'}</div>${cartItems}${accion}`:''}` : '';
+  return rHeader('Pedidos — Mesero','PEDIDOS') + `<main>
+    ${encabezado}
+    ${zonaComanda}
     ${!enAgregar && pend.length?`<div class="h2s">Pedidos activos</div>${pend.map(rOrdMesero).join('')}`:''}
     </main>
-    ${cart.length?`<div class="cartbar"><span>${cart.reduce((s,i)=>s+i.qty,0)} ítem(s) · ${money(tot)}</span><button onclick="${enAgregar?'agregarItems()':'sendOrder()'}">${enAgregar?'AGREGAR':'ENVIAR'}</button></div>`:''}`;
+    ${puedeOrdenar && cart.length?`<div class="cartbar"><span>${cart.reduce((s,i)=>s+i.qty,0)} ítem(s) · ${money(tot)}</span><button onclick="${enAgregar?'agregarItems()':'sendOrder()'}">${enAgregar?'AGREGAR':'ENVIAR'}</button></div>`:''}`;
 }
 function rOrdMesero(o){
   const items = o.items.map(it=>{
@@ -293,7 +313,25 @@ function anularItem(oid, uid){
 function tipoTxt(o){
   return (o.tipo==='llevar'?'🥡 LLEVAR · ':'') + esc(o.mesa||'—');
 }
-function setTipo(t){ tipo = t; render(); }
+function setTipo(t){ tipo = t; mesa = ''; render(); }
+/* ---------- SELECCIÓN DE MESA ---------- */
+function ordersDeMesa(nombre){
+  return state.orders.filter(o=>!o.anulada && o.tipo==='mesa' && o.mesa===nombre);
+}
+function mesaOcupada(nombre){
+  // ocupada = tiene un pedido sin saldar o con ítems aún no entregados
+  return ordersDeMesa(nombre).some(o=>
+    pendienteDe(o) > 0.005 || o.items.some(i=>i.estado!=='entregado' && i.estado!=='anulado'));
+}
+function pickMesa(m){ mesa = m; render(); }
+function rMesaSelector(){
+  const btns = mesasList.map(m=>{
+    const occ = mesaOcupada(m), sel = mesa===m;
+    return `<button class="mesabtn ${sel?'sel':''} ${occ?'occ':'free'}" onclick="pickMesa('${esc(m)}')">
+      ${esc(m)}<small>${occ?'● ocupada':'○ libre'}</small></button>`;
+  }).join('');
+  return `<div class="mesagrid">${btns}</div>`;
+}
 
 /* ---------- BUSCADOR ---------- */
 const norm = s => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
@@ -678,7 +716,30 @@ function rCuenta(){
   const pendientesEntrega = o.items.some(i=>i.estado!=='entregado' && i.estado!=='anulado');
   const pgs = pagosDe(o), pend = pendienteDe(o);
   const pagosLineas = pgs.map(p=>`<div class="tline"><span>${p.metodo==='yape'?'📱 Yape':'💵 Efectivo'}${p.detalle?' ('+esc(p.detalle)+')':''}</span><span>${money(p.monto)}</span></div>`).join('');
-  return `<div class="ovl" onclick="if(event.target===this){cuentaId=null;render()}"><div class="modal">
+  const bol = o.boleta || null;
+  const boletaTicket = bol
+    ? `<hr><div class="tline"><span>BOLETA · DNI/RUC</span><span>${esc(bol.dni)}</span></div>
+       ${bol.nombre?`<div class="tline"><span>Cliente</span><span>${esc(bol.nombre)}</span></div>`:''}
+       ${bol.contacto?`<div class="tline"><span>Enviar a</span><span>${esc(bol.contacto)}</span></div>`:''}`
+    : '';
+  const boletaSection = (bol && !boletaEdit)
+    ? `<div class="boletabox saved">
+        <div><b>🧾 Boleta solicitada</b></div>
+        <div class="det">DNI/RUC ${esc(bol.dni)}${bol.nombre?' · '+esc(bol.nombre):''}${bol.contacto?' · '+esc(bol.contacto):''}</div>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button class="stbtn" style="flex:1;background:var(--cafemed)" onclick="toggleBoleta()">Editar datos</button>
+          <button class="stbtn" style="flex:1;background:var(--rojo)" onclick="quitarBoleta(${o.id})">Quitar boleta</button>
+        </div></div>`
+    : boletaEdit
+    ? `<div class="boletabox">
+        <div class="gl" style="font-weight:700;color:var(--cafemed);margin-bottom:6px">🧾 Datos para la boleta</div>
+        <div class="fieldrow"><input id="bolDni" inputmode="numeric" placeholder="DNI (8 díg.) o RUC (11) — obligatorio" value="${bol?esc(bol.dni):''}"></div>
+        <div class="fieldrow"><input id="bolNombre" placeholder="Nombre (opcional)" value="${bol?esc(bol.nombre):''}"></div>
+        <div class="fieldrow"><input id="bolContacto" placeholder="Celular o correo (para enviarla)" value="${bol?esc(bol.contacto):''}"></div>
+        <button class="add" onclick="guardarBoleta(${o.id})">Guardar datos de boleta</button>
+        <button class="cls" onclick="toggleBoleta()">Cancelar</button></div>`
+    : `<button class="splitbtn" style="background:var(--cafemed)" onclick="toggleBoleta()">🧾 ¿Desea boleta? Registrar datos del cliente</button>`;
+  return `<div class="ovl" onclick="if(event.target===this){cuentaId=null;boletaEdit=false;render()}"><div class="modal">
     <div class="ticket" id="ticketPrint">
       <div style="text-align:center;font-weight:800">PUEBLO CAFE BAR</div>
       <div style="text-align:center;font-size:11px">Sabor, tradición y buenos momentos</div>
@@ -691,6 +752,7 @@ function rCuenta(){
       <hr>
       <div class="tline" style="font-weight:800;font-size:15px"><span>TOTAL</span><span>${money(t)}</span></div>
       ${pagosLineas ? '<hr>' + pagosLineas + (pend>0.005?`<div class="tline"><span>Pendiente</span><span>${money(pend)}</span></div>`:'') : ''}
+      ${boletaTicket}
       <div style="text-align:center;font-size:11px;margin-top:6px">¡Gracias por su visita!</div>
     </div>
     ${pend>0.005 ? `
@@ -701,10 +763,27 @@ function rCuenta(){
       </div>
       <button class="splitbtn" onclick="openSplit(${o.id})">➗ Dividir cuenta por ítems</button>`
     : `<div style="text-align:center;color:var(--verde);font-weight:800;margin:12px 0">✓ Cuenta saldada</div>`}
+    ${boletaSection}
     <button class="add" onclick="window.print()">🖨 Imprimir / guardar PDF</button>
     ${pendientesEntrega?`<button class="splitbtn" style="background:var(--cafemed)" onclick="entregarTodo(${o.id})">Marcar todo entregado</button>`:''}
-    <button class="cls" onclick="cuentaId=null;render()">Cerrar</button>
+    <button class="cls" onclick="cuentaId=null;boletaEdit=false;render()">Cerrar</button>
   </div></div>`;
+}
+/* ---------- BOLETA / DATOS DE FACTURACIÓN ---------- */
+function toggleBoleta(){ boletaEdit = !boletaEdit; render(); }
+function guardarBoleta(oid){
+  const dni      = ((document.getElementById('bolDni')||{}).value || '').trim();
+  const nombre   = ((document.getElementById('bolNombre')||{}).value || '').trim();
+  const contacto = ((document.getElementById('bolContacto')||{}).value || '').trim();
+  if(!dni){ toast('El DNI es obligatorio para la boleta'); return; }
+  if(!/^(\d{8}|\d{11})$/.test(dni)){ toast('DNI = 8 dígitos · RUC = 11 dígitos'); return; }
+  const o = state.orders.find(x=>x.id===oid); if(!o) return;
+  o.boleta = { dni, nombre, contacto, ts: Date.now(), por: user?user.nombre:'' };
+  store.saveOrder(o); boletaEdit = false; toast('Datos de boleta guardados ✓'); render();
+}
+function quitarBoleta(oid){
+  const o = state.orders.find(x=>x.id===oid); if(!o) return;
+  delete o.boleta; store.saveOrder(o); boletaEdit = false; toast('Datos de boleta eliminados'); render();
 }
 /* ---------- DIVIDIR CUENTA POR ÍTEMS ---------- */
 function splitUnits(o){
@@ -919,7 +998,7 @@ function addReceta(){
 function delReceta(id){ state.recetas = state.recetas.filter(x=>x.id!==id); store.saveList('recetas', state.recetas); render(); }
 
 /* ---------- NAV ---------- */
-function go(v){ view = v; modal = null; chkModal = null; cuentaId = null; recetaModal = null; splitModal = null; armAnular = null; armAnularItem = null; armReset = false; addTargetId = null; cierreMode = false; render(); }
+function go(v){ view = v; modal = null; chkModal = null; cuentaId = null; recetaModal = null; splitModal = null; armAnular = null; armAnularItem = null; armReset = false; addTargetId = null; cierreMode = false; boletaEdit = false; render(); }
 window.go = go; window.goCocina = goCocina; window.setTab = setTab; window.openItem = openItem;
 window.pick = pick; window.addCart = addCart; window.rmCart = rmCart; window.sendOrder = sendOrder;
 window.setEstado = setEstado; window.openChk = openChk; window.deliver = deliver; window.csv = csv;
@@ -936,6 +1015,7 @@ window.abrirCaja = abrirCaja; window.cerrarCaja = cerrarCaja; window.reabrirCaja
 window.openSplit = openSplit; window.splitAssign = splitAssign; window.splitAddPersona = splitAddPersona;
 window.splitSetMetodo = splitSetMetodo; window.splitCobrar = splitCobrar;
 window.cronoToggle = cronoToggle; window.cronoReset = cronoReset; window.cronoName = cronoName;
+window.pickMesa = pickMesa; window.toggleBoleta = toggleBoleta; window.guardarBoleta = guardarBoleta; window.quitarBoleta = quitarBoleta;
 
 window.pinPress = pinPress; window.pinBack = pinBack; window.logout = logout;
 
