@@ -7,7 +7,7 @@
 /* menú y modificadores: ver js/menu.js */
 
 /* ================= ESTADO (gestionado por js/sync.js) ================= */
-let state = { orders:[], compras:[], tareas:[], recetas:[], caja:null, modo:'real', historial:[] };
+let state = { orders:[], compras:[], tareas:[], recetas:[], caja:null, modo:'real', historial:[], noDisponible:[] };
 let user = null;
 try{ const u = localStorage.getItem('pc_user'); if(u) user = JSON.parse(u); }catch(e){}
 
@@ -35,6 +35,7 @@ let cierreMode = false;     // caja en modo cierre (mostrando inputs de conteo)
 let boletaEdit = false;     // en la cuenta: formulario de boleta desplegado
 let armBorrarP = false;     // borrar pedidos de práctica (doble toque)
 let armArchivar = false;    // archivar el día (doble toque)
+let histDay = null;         // día expandido en el historial (solo lectura)
 
 let toastTimer = null;
 function toast(msg){
@@ -71,6 +72,7 @@ function render(){
   else if(view === 'mesero') h = rMesero();
   else if(view === 'cocina') h = rCocina();
   else if(view === 'registro') h = rRegistro();
+  else if(view === 'historial') h = rHistorial();
   else if(view === 'gestion') h = rGestion();
   if(modal) h += rModal();
   if(chkModal) h += rChk();
@@ -192,11 +194,13 @@ function rMesero(){
   const oAdd = enAgregar ? state.orders.find(x=>x.id===addTargetId) : null;
   const cats = MENU.map(c=>`<button class="${tab===c.cat?'act':''}" onclick="setTab('${esc(c.cat)}')">${esc(c.cat)}</button>`).join('');
   const cat = MENU.find(c=>c.cat===tab);
-  const prods = cat.items.map((it,i)=>`
-    <div class="prod" onclick="openItem('${esc(it.n)}')">
-      <div><div class="nm">${esc(it.n)}</div>${it.d?`<div class="ds">${esc(it.d)}</div>`:''}</div>
+  const prods = cat.items.map((it,i)=>{
+    const off = noHay(it.n);
+    return `<div class="prod${off?' agotado':''}" onclick="pickProd('${esc(it.n)}')">
+      <div><div class="nm">${esc(it.n)}${off?' <span class="agottag">AGOTADO</span>':''}</div>${it.d?`<div class="ds">${esc(it.d)}</div>`:''}</div>
       <div class="pr">${money(it.p)}</div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
   const cartItems = cart.map((it,i)=>`
     <div class="citem" onclick="openEdit(${i})" style="cursor:pointer">
       <div><b>${it.qty}× ${esc(it.name)}</b> <span style="color:var(--acento)">${money(it.price*it.qty)}</span>
@@ -240,7 +244,10 @@ function rMesero(){
       ${prods}
     </div>
     ${cart.length?`<div class="h2s">${enAgregar?'Ítems a agregar':'Comanda en curso'}</div>${cartItems}${accion}`:''}` : '';
+  const offList = (state.noDisponible || []).filter(n=>PROD[n]);
+  const dispBanner = offList.length ? `<div class="agotbanner">⚠ Hoy NO hay: ${offList.map(esc).join(' · ')}</div>` : '';
   return rHeader('Pedidos — Mesero','PEDIDOS') + `<main>
+    ${dispBanner}
     ${encabezado}
     ${zonaComanda}
     ${!enAgregar && pend.length?`<div class="h2s">Pedidos activos</div>${pend.map(rOrdMesero).join('')}`:''}
@@ -375,11 +382,13 @@ function rResults(){
   }));
   scored.sort((a,b) => b.score - a.score);
   if(!scored.length) return `<div class="empty">Sin resultados para “${esc(query)}”.<br>Prueba con otra palabra (ej. fresa, alitas, café…)</div>`;
-  return scored.slice(0, 20).map(({it}) => `
-    <div class="prod" onclick="openItem('${esc(it.n)}')">
-      <div><div class="nm">${esc(it.n)}<span class="srchtag">${esc(it.cat)}</span></div>${it.d?`<div class="ds">${esc(it.d)}</div>`:''}</div>
+  return scored.slice(0, 20).map(({it}) => {
+    const off = noHay(it.n);
+    return `<div class="prod${off?' agotado':''}" onclick="pickProd('${esc(it.n)}')">
+      <div><div class="nm">${esc(it.n)}${off?' <span class="agottag">AGOTADO</span>':''}<span class="srchtag">${esc(it.cat)}</span></div>${it.d?`<div class="ds">${esc(it.d)}</div>`:''}</div>
       <div class="pr">${money(it.p)}</div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 }
 function anular(id){
   if(armAnular !== id){ armAnular = id; render(); setTimeout(()=>{ if(armAnular===id){armAnular=null; render();} }, 3500); return; }
@@ -389,6 +398,12 @@ function anular(id){
 }
 
 /* ---------- MODAL PRODUCTO ---------- */
+/* ---------- DISPONIBILIDAD (productos agotados hoy) ---------- */
+function noHay(name){ return (state.noDisponible || []).includes(name); }
+function pickProd(name){
+  if(noHay(name)){ toast('“' + name + '” está marcado como AGOTADO hoy'); return; }
+  openItem(name);
+}
 function openItem(name){
   const it = PROD[name];
   const sel = {};
@@ -744,7 +759,7 @@ function rRegistro(){
     ${tot>0?`<div class="regtot" style="background:var(--cafemed);font-size:13px"><span>💵 Efectivo: ${money(totEf)}</span><span>📱 Yape: ${money(totYa)}</span><span>Sin cobrar: ${money(sinPago)}</span></div>`:''}
     ${cards || '<div class="empty">Aún no hay comandas registradas.</div>'}
     ${state.orders.length?`<button class="csvbtn" onclick="csv()">Descargar CSV para cuadre</button>`:''}
-    ${nHist?`<button class="csvbtn" style="background:var(--verde)" onclick="csvHistorial()">📦 Descargar historial archivado (${nHist})</button>`:''}
+    ${nHist?`<button class="csvbtn" style="background:var(--cafemed)" onclick="go('historial')">📅 Ver historial de días archivados</button>`:''}
     ${esAdmin() && nPract?`<button class="csvbtn" style="background:${armBorrarP?'#7a1f14':'var(--rojo)'}" onclick="borrarPractica()">${armBorrarP?'¿Seguro? Toca de nuevo — borrar SOLO prácticas':'🧪 Borrar pedidos de práctica ('+nPract+')'}</button>`:''}
     ${esAdmin() && validas.length?`<button class="csvbtn" style="background:${armArchivar?'#7a1f14':'var(--acento)'}" onclick="archivarDia()">${armArchivar?'¿Seguro? Toca de nuevo — archivar y empezar limpio':'📦 Cerrar y archivar el día'}</button>`:''}
   </main>`;
@@ -762,6 +777,58 @@ function archivarDia(){
   armArchivar = false; store.archivarDia(); toast('Día archivado — se guardó en el historial ✓'); render();
 }
 function csvHistorial(){ csvDe(state.historial || [], 'historial_pueblo_cafe.csv'); }
+
+/* ---------- HISTORIAL DE DÍAS (solo lectura) ---------- */
+function toggleHistDay(k){ histDay = (histDay===k) ? null : k; render(); }
+function rHistorial(){
+  const hist = (state.historial || []).filter(o=>!o.practica);
+  if(!hist.length){
+    return rHeader('Historial de días','HISTORIAL') + `<main>
+      <div class="empty">Aún no hay días archivados.<br>Cuando uses <b>“Cerrar y archivar el día”</b> en Caja, el día quedará guardado aquí para consultarlo.</div>
+    </main>`;
+  }
+  const byDay = {};
+  hist.forEach(o=>{ const k = dayKey(o.ts); (byDay[k] = byDay[k] || []).push(o); });
+  const dias = Object.keys(byDay).sort().reverse();
+  const cards = dias.map(k=>{
+    const os = byDay[k];
+    const validas = os.filter(o=>!o.anulada);
+    const anul = os.length - validas.length;
+    const tot = validas.reduce((s,o)=>s+orderTotal(o),0);
+    let ef=0, ya=0;
+    validas.forEach(o=> pagosDe(o).forEach(p=>{ if(p.metodo==='efectivo') ef+=p.monto||0; else if(p.metodo==='yape') ya+=p.monto||0; }));
+    const sinCobrar = tot - ef - ya;
+    const fechaTxt = new Date(os[0].ts).toLocaleDateString();
+    const abierto = histDay===k;
+    const detalle = abierto ? os.slice().reverse().map(o=>{
+      const t = orderTotal(o);
+      const badge = o.anulada ? '<span class="badge b-anulado" style="float:right">ANULADA</span>' : '';
+      return `<div class="regcard" style="margin:8px 0">
+        <b>#${o.id}</b> · ${tipoTxt(o)}${o.mesero?' · '+esc(o.mesero):''} · ${hhmm(o.ts)} ${badge}<br>
+        <span style="color:var(--cafemed)">${o.items.map(i=>(i.estado==='anulado'?'<s>':'')+i.qty+'× '+esc(i.name)+(i.estado==='anulado'?'</s>':'')).join(', ')}</span>
+        ${o.boleta?`<div style="font-size:11.5px;color:var(--cafemed)">🧾 Boleta · DNI ${esc(o.boleta.dni)}${o.boleta.nombre?' · '+esc(o.boleta.nombre):''}</div>`:''}
+        <div style="font-weight:800;color:var(--acento)">${money(t)}</div>
+      </div>`;
+    }).join('') : '';
+    return `<div class="histcard">
+      <div class="histhead" onclick="toggleHistDay('${k}')">
+        <div><b>${fechaTxt}</b><div style="font-size:12px;color:var(--cafemed)">${validas.length} venta(s)${anul?` · ${anul} anulada(s)`:''} · toca para ${abierto?'ocultar':'ver'}</div></div>
+        <div style="text-align:right">
+          <div style="font-weight:800;color:var(--acento);font-size:16px">${money(tot)}</div>
+          <div style="font-size:11.5px;color:var(--cafemed)">💵 ${money(ef)} · 📱 ${money(ya)}${sinCobrar>0.005?` · sin cobrar ${money(sinCobrar)}`:''}</div>
+        </div>
+        <span class="histarrow">${abierto?'▲':'▼'}</span>
+      </div>
+      ${detalle}
+    </div>`;
+  }).join('');
+  return rHeader('Historial de días','HISTORIAL') + `<main>
+    <p style="font-size:13px;color:var(--cafemed)">Días ya cerrados y archivados · solo lectura. Toca un día para ver sus comandas.</p>
+    ${cards}
+    <button class="csvbtn" style="background:var(--verde)" onclick="csvHistorial()">📦 Descargar todo el historial (CSV)</button>
+    <button class="csvbtn" style="background:var(--gris)" onclick="go('registro')">← Volver a Caja</button>
+  </main>`;
+}
 function rCuenta(){
   const o = state.orders.find(x=>x.id===cuentaId);
   if(!o) return '';
@@ -955,18 +1022,48 @@ function csv(){ csvDe(state.orders, 'comandas_pueblo_cafe.csv'); }
 let gtab = 'compras';   // compras | tareas | recetas
 function setGtab(t){ gtab = t; render(); }
 function rGestion(){
+  const nOff = (state.noDisponible||[]).length;
   const tabs = `<div class="tabs">
+    <button class="${gtab==='disp'?'act':''}" onclick="setGtab('disp')">🍽 Disponibilidad${nOff?` (${nOff})`:''}</button>
     <button class="${gtab==='compras'?'act':''}" onclick="setGtab('compras')">🛒 Lista de compras</button>
     <button class="${gtab==='tareas'?'act':''}" onclick="setGtab('tareas')">🔑 Apertura y cierre</button>
     <button class="${gtab==='recetas'?'act':''}" onclick="setGtab('recetas')">📖 Recetas</button>
   </div>`;
   let body = '';
-  if(gtab==='compras') body = rCompras();
+  if(gtab==='disp') body = rDisponibilidad();
+  else if(gtab==='compras') body = rCompras();
   else if(gtab==='tareas') body = rTareas();
   else body = rRecetas();
   return rHeader('Gestión del Café','GESTIÓN') + `<main>${tabs}${body}</main>`;
 }
 
+/* ---------- DISPONIBILIDAD DE LA CARTA ---------- */
+function toggleDisp(name){
+  const arr = (state.noDisponible || []).slice();
+  const i = arr.indexOf(name);
+  if(i >= 0) arr.splice(i,1); else arr.push(name);
+  store.saveList('noDisponible', arr);
+  toast(i>=0 ? '“'+name+'” disponible otra vez' : '“'+name+'” marcado como agotado hoy');
+  render();
+}
+function resetDisp(){ store.saveList('noDisponible', []); toast('Todos los productos marcados como disponibles'); render(); }
+function rDisponibilidad(){
+  const nOff = (state.noDisponible||[]).length;
+  const bloques = MENU.map(c=>{
+    const rows = c.items.map(it=>{
+      const off = noHay(it.n);
+      return `<div class="dispitem${off?' off':''}">
+        <span class="dispnm"><b>${esc(it.n)}</b> <span class="det">${money(it.p)}${off?' · <span class="agot">AGOTADO HOY</span>':''}</span></span>
+        <button class="stbtn ${off?'st-pendiente':'st-listo'}" style="padding:8px 12px;margin:0;white-space:nowrap" onclick="toggleDisp('${esc(it.n)}')">${off?'✓ Hay':'Marcar agotado'}</button>
+      </div>`;
+    }).join('');
+    return `<div class="h2s">${esc(c.cat)}</div>${rows}`;
+  }).join('');
+  return `
+    <p style="font-size:13px;color:var(--cafemed)">Marca lo que se agotó hoy. Al mesero le aparece un aviso arriba y no puede pedir esos productos. Cualquiera del equipo puede actualizarlo.</p>
+    ${nOff?`<button class="csvbtn" style="background:var(--verde)" onclick="resetDisp()">✓ Marcar TODO disponible (inicio de día)</button>`:'<div class="empty" style="padding:12px">Todo disponible por ahora. 🎉</div>'}
+    ${bloques}`;
+}
 function rCompras(){
   const items = state.compras.map(c=>`
     <div class="citem" style="align-items:center">
@@ -1057,13 +1154,14 @@ function addReceta(){
 function delReceta(id){ state.recetas = state.recetas.filter(x=>x.id!==id); store.saveList('recetas', state.recetas); render(); }
 
 /* ---------- NAV ---------- */
-function go(v){ view = v; modal = null; chkModal = null; cuentaId = null; recetaModal = null; splitModal = null; armAnular = null; armAnularItem = null; armBorrarP = false; armArchivar = false; addTargetId = null; cierreMode = false; boletaEdit = false; render(); }
+function go(v){ view = v; modal = null; chkModal = null; cuentaId = null; recetaModal = null; splitModal = null; armAnular = null; armAnularItem = null; armBorrarP = false; armArchivar = false; addTargetId = null; cierreMode = false; boletaEdit = false; histDay = null; render(); }
 window.go = go; window.goCocina = goCocina; window.setTab = setTab; window.openItem = openItem;
 window.pick = pick; window.addCart = addCart; window.rmCart = rmCart; window.sendOrder = sendOrder;
 window.setEstado = setEstado; window.openChk = openChk; window.deliver = deliver; window.csv = csv;
 window.setTipo = setTipo; window.openEdit = openEdit; window.splitCart = splitCart; window.anular = anular;
 window.entregarTodo = entregarTodo; window.doSearch = doSearch;
-window.setModo = setModo; window.borrarPractica = borrarPractica; window.archivarDia = archivarDia; window.csvHistorial = csvHistorial;
+window.setModo = setModo; window.borrarPractica = borrarPractica; window.archivarDia = archivarDia; window.csvHistorial = csvHistorial; window.toggleHistDay = toggleHistDay;
+window.pickProd = pickProd; window.toggleDisp = toggleDisp; window.resetDisp = resetDisp;
 window.toggleEntrega = toggleEntrega; window.anularItem = anularItem; window.openChkMulti = openChkMulti;
 window.setPago = setPago; window.setGtab = setGtab;
 window.addCompra = addCompra; window.toggleCompra = toggleCompra; window.delCompra = delCompra; window.clearCompras = clearCompras;
