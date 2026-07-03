@@ -110,3 +110,29 @@
     #ticketPrint{position:absolute; left:0; top:0; width:100%;}
     .ovl{position:static; background:none;}
   }
+
+/* ===== Caja (apertura/cierre) ===== */
+.cajabox{border:2px solid var(--acento); border-radius:14px; padding:14px; margin-bottom:14px; background:var(--blanco);}
+.cajabox.abierta{border-color:var(--verde);}
+.cajabox.cerrada{border-color:var(--gris);}
+.cajah{font-weight:800; color:var(--cafe); font-size:16px; margin-bottom:8px;}
+.cajarow{display:flex; justify-content:space-between; gap:10px; font-size:13.5px; padding:4px 0; border-top:1px dashed #E0D3AC;}
+.cajarow:first-of-type{border-top:none;}
+
+/* ===== Dividir cuenta ===== */
+.uline{display:flex; justify-content:space-between; align-items:center; gap:8px; padding:8px 0; border-bottom:1px dashed #E0D3AC; font-size:14px;}
+.pchips{display:flex; gap:5px; flex-wrap:wrap; justify-content:flex-end;}
+.pchip{border:1.5px solid #C9BA8E; background:var(--crema); border-radius:8px; padding:6px 10px; font-size:13px; font-weight:700; color:var(--cafe);}
+.pchip.sel{font-weight:800;}
+.pcard{border:2px solid #C9BA8E; border-radius:12px; padding:10px 12px; margin:8px 0; font-size:14px; background:var(--blanco);}
+.splitfoot{background:var(--crema); border-radius:10px; padding:9px 12px; font-size:13px; margin:8px 0; text-align:center;}
+
+/* ===== Cronómetros de cocción ===== */
+.cronowrap{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;}
+.cronocard{flex:1; min-width:150px; border:2px solid #C9BA8E; border-radius:12px; padding:10px; background:var(--blanco); text-align:center;}
+.cronocard.run{border-color:var(--verde); background:#F0F8F1;}
+.cronon{width:100%; border:none; border-bottom:1px solid #D8CBA4; background:transparent; text-align:center; font-size:13px; font-weight:700; color:var(--cafemed); padding:2px;}
+.cronot{font-size:30px; font-weight:800; color:var(--cafe); font-variant-numeric:tabular-nums; margin:6px 0;}
+.cronocard.run .cronot{color:var(--verde);}
+.cronobtns{display:flex; gap:6px;}
+.cronobtns .stbtn{flex:1; margin:0;}

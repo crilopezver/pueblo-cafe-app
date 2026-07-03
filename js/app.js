@@ -7,7 +7,7 @@
 /* menú y modificadores: ver js/menu.js */
 
 /* ================= ESTADO (gestionado por js/sync.js) ================= */
-let state = { orders:[], compras:[], tareas:[], recetas:[] };
+let state = { orders:[], compras:[], tareas:[], recetas:[], caja:null };
 let user = null;
 try{ const u = localStorage.getItem('pc_user'); if(u) user = JSON.parse(u); }catch(e){}
 
@@ -26,6 +26,9 @@ let armAnular = null;       // id de comanda con anulación armada (doble toque)
 let armAnularItem = null;   // {oid, uid} de ítem con anulación armada
 let armReset = false;       // reinicio armado (doble toque)
 let selEntrega = new Set(); // uids marcados para entrega conjunta
+let addTargetId = null;     // pedido al que se le están agregando ítems (null = pedido nuevo)
+let splitModal = null;      // división de cuenta {oid, personas:[], asign:{}, nextId}
+let cierreMode = false;     // caja en modo cierre (mostrando inputs de conteo)
 
 let toastTimer = null;
 function toast(msg){
@@ -67,7 +70,26 @@ function render(){
   if(chkModal) h += rChk();
   if(cuentaId !== null) h += rCuenta();
   if(recetaModal) h += rRecetaModal();
+  if(splitModal) h += rSplit();
   app.innerHTML = h;
+}
+
+/* ================= CAJA (apertura / cierre) ================= */
+function dayKey(d){ d = d ? new Date(d) : new Date(); return d.getFullYear() + '-' + (d.getMonth()+1) + '-' + d.getDate(); }
+function cajaHoyAbierta(){ const c = state.caja; return !!(c && c.estado === 'abierta' && c.fecha === dayKey()); }
+
+/* ================= PAGOS (soporta pago simple y dividido) ================= */
+function pagosDe(o){
+  if(Array.isArray(o.pagos)) return o.pagos;
+  if(o.pago) return [{ monto: orderTotal(o), metodo: o.pago }];   // compat. con modelo viejo
+  return [];
+}
+function pagadoDe(o){ return pagosDe(o).reduce((s,p)=>s+(p.monto||0),0); }
+function pendienteDe(o){ return Math.max(0, orderTotal(o) - pagadoDe(o)); }
+function estaPagado(o){ return orderTotal(o) > 0 && pendienteDe(o) < 0.005; }
+function ventasMetodo(metodo){
+  return state.orders.filter(o=>!o.anulada).reduce((s,o)=>
+    s + pagosDe(o).filter(p=>p.metodo===metodo).reduce((a,p)=>a+(p.monto||0),0), 0);
 }
 
 function bannerTxt(){
@@ -136,6 +158,18 @@ function logout(){ user = null; pinBuf = ''; try{ localStorage.removeItem('pc_us
 
 /* ---------- MESERO ---------- */
 function rMesero(){
+  // bloqueo: sin caja abierta no se atiende
+  if(!cajaHoyAbierta()){
+    const irCaja = vistasDe(user.rol).includes('registro')
+      ? `<button class="rolbtn rol-caja" onclick="go('registro')">Ir a abrir caja</button>` : '';
+    return rHeader('Pedidos — Mesero','PEDIDOS') + `<main>
+      <div class="latebanner" style="animation:none;background:var(--acento)">🔒 La caja está cerrada</div>
+      <div class="empty">Para empezar a atender, primero abre la caja del día.<br>Ve a <b>REGISTRO / CAJA → Abrir caja</b> e ingresa los fondos de efectivo y Yape.</div>
+      ${irCaja}
+    </main>`;
+  }
+  const enAgregar = addTargetId !== null;
+  const oAdd = enAgregar ? state.orders.find(x=>x.id===addTargetId) : null;
   const cats = MENU.map(c=>`<button class="${tab===c.cat?'act':''}" onclick="setTab('${esc(c.cat)}')">${esc(c.cat)}</button>`).join('');
   const cat = MENU.find(c=>c.cat===tab);
   const prods = cat.items.map((it,i)=>`
@@ -151,12 +185,19 @@ function rMesero(){
     </div>`).join('');
   const tot = cart.reduce((s,it)=>s+it.price*it.qty,0);
   const pend = pendingOrders();
+  const encabezado = enAgregar
+    ? `<div class="latebanner" style="animation:none;background:var(--verde)">➕ Agregando ítems al pedido #${addTargetId} · ${tipoTxt(oAdd)}
+        <button class="cls" style="color:#fff;margin:6px 0 0" onclick="cancelAgregar()">Cancelar</button></div>`
+    : `<div class="tabs" style="padding-bottom:6px">
+        <button class="${tipo==='mesa'?'act':''}" onclick="setTipo('mesa')">🍽 Para mesa</button>
+        <button class="${tipo==='llevar'?'act':''}" onclick="setTipo('llevar')">🥡 Para llevar</button>
+      </div>
+      <div class="fieldrow"><input id="mesa" placeholder="${tipo==='mesa'?'Mesa (ej. Mesa 3)':'Nombre del cliente'}" value="${esc(mesa)}" oninput="mesa=this.value"></div>`;
+  const accion = enAgregar
+    ? `<button class="sendbtn" onclick="agregarItems()">Agregar al pedido #${addTargetId} · ${money(tot)}</button>`
+    : `<button class="sendbtn" onclick="sendOrder()">Enviar a cocina · ${money(tot)}</button>`;
   return rHeader('Pedidos — Mesero','PEDIDOS') + `<main>
-    <div class="tabs" style="padding-bottom:6px">
-      <button class="${tipo==='mesa'?'act':''}" onclick="setTipo('mesa')">🍽 Para mesa</button>
-      <button class="${tipo==='llevar'?'act':''}" onclick="setTipo('llevar')">🥡 Para llevar</button>
-    </div>
-    <div class="fieldrow"><input id="mesa" placeholder="${tipo==='mesa'?'Mesa (ej. Mesa 3)':'Nombre del cliente'}" value="${esc(mesa)}" oninput="mesa=this.value"></div>
+    ${encabezado}
     <div class="srchrow">
       <input id="buscar" type="search" placeholder="🔍 Buscar producto (ej. fresa, alitas, mojito…)" value="${esc(query)}" oninput="doSearch(this.value)">
       <button class="clr" onclick="document.getElementById('buscar').value='';doSearch('')">✕</button>
@@ -166,11 +207,10 @@ function rMesero(){
       <div class="tabs">${cats}</div>
       ${prods}
     </div>
-    ${cart.length?`<div class="h2s">Comanda en curso</div>${cartItems}
-      <button class="sendbtn" onclick="sendOrder()">Enviar a cocina · ${money(tot)}</button>`:''}
-    ${pend.length?`<div class="h2s">Pedidos activos</div>${pend.map(rOrdMesero).join('')}`:''}
+    ${cart.length?`<div class="h2s">${enAgregar?'Ítems a agregar':'Comanda en curso'}</div>${cartItems}${accion}`:''}
+    ${!enAgregar && pend.length?`<div class="h2s">Pedidos activos</div>${pend.map(rOrdMesero).join('')}`:''}
     </main>
-    ${cart.length?`<div class="cartbar"><span>${cart.reduce((s,i)=>s+i.qty,0)} ítem(s) · ${money(tot)}</span><button onclick="sendOrder()">ENVIAR</button></div>`:''}`;
+    ${cart.length?`<div class="cartbar"><span>${cart.reduce((s,i)=>s+i.qty,0)} ítem(s) · ${money(tot)}</span><button onclick="${enAgregar?'agregarItems()':'sendOrder()'}">${enAgregar?'AGREGAR':'ENVIAR'}</button></div>`:''}`;
 }
 function rOrdMesero(o){
   const items = o.items.map(it=>{
@@ -201,10 +241,25 @@ function rOrdMesero(o){
   const col = colorFor(o);
   return `<div class="ordcard" style="border:2.5px solid ${col};border-left:9px solid ${col};background:${col}14">
     <div class="ohead" style="background:${col};color:#fff;margin:-12px -14px 10px;padding:10px 14px;border-radius:6px 6px 0 0;font-size:14.5px">
-      <span>#${o.id} · ${tipoTxt(o)}</span><span>${hhmm(o.ts)}</span></div>${items}
+      <span>#${o.id} · ${tipoTxt(o)}</span><span>${hhmm(o.ts)} · hace ${elapsedMin(o.ts, Date.now())} min</span></div>${items}
+    <button class="stbtn st-preparando" style="margin-top:8px;width:100%" onclick="startAgregar(${o.id})">➕ Agregar ítems a este pedido</button>
     ${listos.length>1?`<button class="stbtn ${allSel?'st-pendiente':'st-preparando'}" style="margin-top:8px" onclick="toggleAllListos(${o.id})">${allSel?'Quitar selección':'☑ Seleccionar todos los listos ('+listos.length+')'}</button>`:''}
     ${nSel>1?`<button class="entregarSel" onclick="openChkMulti(${o.id})">Entregar los ${nSel} marcados juntos ✓</button>`:''}
     <button class="anularbtn ${armado?'armado':''}" onclick="anular(${o.id})">${armado?'¿Seguro? Toca de nuevo para anular todo':'Anular pedido completo'}</button></div>`;
+}
+/* ---------- AGREGAR ÍTEMS A UN PEDIDO ENVIADO ---------- */
+function startAgregar(oid){ addTargetId = oid; cart = []; query = ''; tab = MENU[0].cat; toast('Agregando ítems al pedido #'+oid); render(); }
+function cancelAgregar(){ addTargetId = null; cart = []; render(); }
+function agregarItems(){
+  if(!cajaHoyAbierta()){ toast('Abre la caja primero'); return; }
+  if(!cart.length) return;
+  const o = state.orders.find(x=>x.id===addTargetId);
+  if(!o){ addTargetId = null; render(); return; }
+  const base = o.items.reduce((m,i)=>Math.max(m, i.uid), 0);
+  cart.forEach((it,k)=> o.items.push({ uid: base+k+1, ...it, estado:'pendiente' }));
+  store.saveOrder(o);
+  const id = o.id; addTargetId = null; cart = [];
+  toast('Ítems agregados al pedido #'+id+' ✓'); render();
 }
 const PALETA = ['#B5722A','#2E5D7D','#2E7D46','#B03A2E','#742284','#8A6D00','#0E7C7B','#37474F'];
 function colorFor(o){
@@ -345,6 +400,7 @@ function rmCart(i){ cart.splice(i,1); render(); }
 function setTab(c){ tab = c; render(); }
 
 async function sendOrder(){
+  if(!cajaHoyAbierta()){ toast('Abre la caja primero para atender'); return; }
   if(!cart.length) return;
   const id = await store.nextOrderId();
   const o = { id, mesa: mesa.trim(), tipo, ts: Date.now(), mesero: user ? user.nombre : '',
@@ -398,11 +454,36 @@ function rCocina(){
   let nLate = 0;
   ords.forEach(o=>o.items.forEach(it=>{ if(it.station===station && isLate(o, it)) nLate++; }));
   const lateBanner = nLate ? `<div class="latebanner">⏰ ¡${nLate} pedido(s) rápido(s) retrasado(s)! Pasaron más de ${LATE_MIN} minutos.</div>` : '';
+  const cronosHtml = station === 'salados' ? rCronos() : '';
   return rHeader(name, station.toUpperCase()) + `<main>
+    ${cronosHtml}
     ${lateBanner}
     ${lotes}
     ${cards || `<div class="empty">No hay pedidos en cola.<br>Los pedidos que el mesero digite para esta cocina aparecerán aquí.</div>`}
   </main>`;
+}
+/* ---------- CRONÓMETROS DE COCCIÓN (locales al dispositivo, cuentan hacia arriba) ---------- */
+let cronos = [
+  { nombre:'Alitas', run:false, base:0, t0:0 },
+  { nombre:'Papas fritas', run:false, base:0, t0:0 },
+  { nombre:'Panini', run:false, base:0, t0:0 },
+];
+function cronoMs(c){ return c.base + (c.run ? Date.now() - c.t0 : 0); }
+function fmtCrono(ms){ const s = Math.floor(ms/1000); return String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0'); }
+function cronoToggle(i){ const c = cronos[i]; if(c.run){ c.base = cronoMs(c); c.run = false; } else { c.t0 = Date.now(); c.run = true; } render(); }
+function cronoReset(i){ const c = cronos[i]; c.run = false; c.base = 0; c.t0 = 0; render(); }
+function cronoName(i, v){ cronos[i].nombre = v; }   // sin render para no perder el foco del input
+function rCronos(){
+  const cards = cronos.map((c,i)=>`
+    <div class="cronocard ${c.run?'run':''}">
+      <input class="cronon" value="${esc(c.nombre)}" oninput="cronoName(${i},this.value)">
+      <div class="cronot" id="cronot${i}">${fmtCrono(cronoMs(c))}</div>
+      <div class="cronobtns">
+        <button class="stbtn ${c.run?'st-preparando':'st-listo'}" onclick="cronoToggle(${i})">${c.run?'⏸ Pausar':'▶ Iniciar'}</button>
+        <button class="stbtn" style="background:var(--cafemed)" onclick="cronoReset(${i})">↺ Reiniciar</button>
+      </div>
+    </div>`).join('');
+  return `<div class="h2s">⏱ Cronómetros de cocción</div><div class="cronowrap">${cards}</div>`;
 }
 function setEstado(oid, uid, st){
   const o = state.orders.find(o=>o.id===oid); if(!o) return;
@@ -432,9 +513,76 @@ function salioEn(o){
 function orderTotal(o){
   return o.items.filter(i=>i.estado!=='anulado').reduce((s,i)=>s+i.price*i.qty,0);
 }
-function setPago(oid, m){
+function setPago(oid, metodo){
   const o = state.orders.find(x=>x.id===oid); if(!o) return;
-  o.pago = m; store.saveOrder(o); toast('Pago registrado: ' + (m==='yape'?'Yape':'Efectivo')); render();
+  const pend = pendienteDe(o);
+  if(pend <= 0.005){ toast('La cuenta ya está saldada'); return; }
+  o.pagos = pagosDe(o).slice();
+  o.pagos.push({ monto: Math.round(pend*100)/100, metodo });
+  delete o.pago;
+  store.saveOrder(o); toast('Pago registrado: ' + money(pend) + ' ' + (metodo==='yape'?'Yape':'Efectivo')); render();
+}
+
+/* ---------- APERTURA / CIERRE DE CAJA ---------- */
+function abrirCaja(){
+  const ef = parseFloat((document.getElementById('cajaEf')||{}).value);
+  const ya = parseFloat((document.getElementById('cajaYa')||{}).value);
+  if(isNaN(ef) || isNaN(ya)){ toast('Ingresa ambos fondos: efectivo y Yape'); return; }
+  store.saveCaja({ fecha: dayKey(), estado:'abierta', fondoEfectivo:ef, fondoYape:ya,
+    aperturaTs: Date.now(), aperturaPor: user?user.nombre:'', efectivoContado:null, yapeContado:null, cierreTs:null, cierrePor:'' });
+  cierreMode = false; toast('Caja abierta ✓'); render();
+}
+function cerrarCaja(){
+  const ef = parseFloat((document.getElementById('cierreEf')||{}).value);
+  const ya = parseFloat((document.getElementById('cierreYa')||{}).value);
+  if(isNaN(ef) || isNaN(ya)){ toast('Ingresa el efectivo y el Yape contados'); return; }
+  store.saveCaja({ ...state.caja, estado:'cerrada', efectivoContado:ef, yapeContado:ya, cierreTs: Date.now(), cierrePor: user?user.nombre:'' });
+  cierreMode = false; toast('Caja cerrada ✓'); render();
+}
+function reabrirCaja(){ store.saveCaja({ ...state.caja, estado:'abierta' }); toast('Caja reabierta'); render(); }
+function rCaja(){
+  const c = state.caja, hoy = dayKey();
+  const vef = ventasMetodo('efectivo'), vya = ventasMetodo('yape');
+  const dtxt = d => Math.abs(d) < 0.005 ? 'cuadra ✓' : (d > 0 ? 'sobra ' + money(d) : 'falta ' + money(-d));
+  if(c && c.estado==='abierta' && c.fecha===hoy){
+    const espEf = c.fondoEfectivo + vef, espYa = c.fondoYape + vya;
+    if(!cierreMode){
+      return `<div class="cajabox abierta">
+        <div class="cajah">🟢 Caja abierta</div>
+        <div class="cajarow"><span>Fondo inicial</span><span>💵 ${money(c.fondoEfectivo)} · 📱 ${money(c.fondoYape)}</span></div>
+        <div class="cajarow"><span>Ventas hasta ahora</span><span>💵 ${money(vef)} · 📱 ${money(vya)}</span></div>
+        <div class="cajarow" style="font-weight:800"><span>Esperado en caja</span><span>💵 ${money(espEf)} · 📱 ${money(espYa)}</span></div>
+        <div style="font-size:11px;color:var(--gris);margin-top:4px">Abrió ${esc(c.aperturaPor)||'—'} · ${hhmm(c.aperturaTs)}</div>
+        <button class="csvbtn" style="background:var(--rojo);margin-top:8px" onclick="cierreMode=true;render()">Cerrar caja</button>
+      </div>`;
+    }
+    return `<div class="cajabox abierta">
+      <div class="cajah">Cierre de caja</div>
+      <div style="font-size:12px;color:var(--cafemed);margin-bottom:6px">Cuenta el dinero real y regístralo:</div>
+      <div class="fieldrow"><input id="cierreEf" type="number" inputmode="decimal" placeholder="Efectivo contado (S/)"></div>
+      <div class="fieldrow"><input id="cierreYa" type="number" inputmode="decimal" placeholder="Yape contado (S/)"></div>
+      <div class="cajarow"><span>Esperado</span><span>💵 ${money(espEf)} · 📱 ${money(espYa)}</span></div>
+      <button class="sendbtn" onclick="cerrarCaja()">Confirmar cierre</button>
+      <button class="cls" onclick="cierreMode=false;render()">Cancelar</button>
+    </div>`;
+  }
+  if(c && c.estado==='cerrada' && c.fecha===hoy){
+    const espEf = c.fondoEfectivo + vef, espYa = c.fondoYape + vya;
+    return `<div class="cajabox cerrada">
+      <div class="cajah">🔒 Caja cerrada hoy</div>
+      <div class="cajarow"><span>Efectivo</span><span>esp. ${money(espEf)} · cont. ${money(c.efectivoContado)} · <b>${dtxt((c.efectivoContado||0)-espEf)}</b></span></div>
+      <div class="cajarow"><span>Yape</span><span>esp. ${money(espYa)} · cont. ${money(c.yapeContado)} · <b>${dtxt((c.yapeContado||0)-espYa)}</b></span></div>
+      <div style="font-size:11px;color:var(--gris);margin-top:4px">Cerró ${esc(c.cierrePor)||'—'} · ${hhmm(c.cierreTs)}</div>
+      <button class="csvbtn" style="background:var(--cafemed);margin-top:8px" onclick="reabrirCaja()">Reabrir caja (pruebas)</button>
+    </div>`;
+  }
+  return `<div class="cajabox">
+    <div class="cajah">Abrir caja del día</div>
+    <div style="font-size:12px;color:var(--cafemed);margin-bottom:6px">Registra los fondos con los que arrancas. Sin caja abierta no se pueden tomar pedidos.</div>
+    <div class="fieldrow"><input id="cajaEf" type="number" inputmode="decimal" placeholder="Fondo efectivo (S/)"></div>
+    <div class="fieldrow"><input id="cajaYa" type="number" inputmode="decimal" placeholder="Saldo inicial Yape (S/)"></div>
+    <button class="sendbtn" onclick="abrirCaja()">Abrir caja</button>
+  </div>`;
 }
 
 /* ---------- CHECKLIST DE ENTREGA ---------- */
@@ -477,15 +625,23 @@ function rRegistro(){
   const os = state.orders.slice().reverse();
   const validas = state.orders.filter(o=>!o.anulada);
   const tot = validas.reduce((s,o)=>s+orderTotal(o),0);
-  const totEf = validas.filter(o=>o.pago==='efectivo').reduce((s,o)=>s+orderTotal(o),0);
-  const totYa = validas.filter(o=>o.pago==='yape').reduce((s,o)=>s+orderTotal(o),0);
+  const totEf = ventasMetodo('efectivo'), totYa = ventasMetodo('yape');
   const sinPago = tot - totEf - totYa;
   const cards = os.map(o=>{
     const t = orderTotal(o);
     const done = o.items.every(i=>i.estado==='entregado' || i.estado==='anulado');
     const badge = o.anulada ? '<span class="badge b-anulado" style="float:right">ANULADA</span>'
       : `<span class="badge ${done?'b-entregado':'b-pendiente'}" style="float:right">${done?'ENTREGADA':'ACTIVA'}</span>`;
-    const pagoBadge = !o.anulada && o.pago ? `<span class="badge b-${o.pago}" style="float:right;margin-right:6px">${o.pago==='yape'?'📱 YAPE':'💵 EFECTIVO'}</span>` : '';
+    let pagoBadge = '';
+    if(!o.anulada){
+      const metodos = [...new Set(pagosDe(o).map(p=>p.metodo))];
+      if(estaPagado(o)){
+        const lbl = metodos.length>1 ? '💵/📱 DIVIDIDA' : (metodos[0]==='yape' ? '📱 YAPE' : '💵 EFECTIVO');
+        pagoBadge = `<span class="badge b-${metodos.length>1?'entregado':metodos[0]}" style="float:right;margin-right:6px">${lbl}</span>`;
+      } else if(pagadoDe(o) > 0){
+        pagoBadge = `<span class="badge b-pendiente" style="float:right;margin-right:6px">PARCIAL ${money(pagadoDe(o))}/${money(t)}</span>`;
+      }
+    }
     const sal = salioEn(o);
     const anulados = o.items.filter(i=>i.estado==='anulado').length;
     return `<div class="regcard"><b>#${o.id}</b> · ${tipoTxt(o)}${o.mesero?' · '+esc(o.mesero):''} · ${new Date(o.ts).toLocaleDateString()} ${hhmm(o.ts)}
@@ -498,11 +654,12 @@ function rRegistro(){
       </div></div>`;
   }).join('');
   return rHeader('Registro del día','CAJA') + `<main>
+    ${rCaja()}
     <div class="regtot"><span>${validas.length} comanda(s)${state.orders.length>validas.length?` · ${state.orders.length-validas.length} anulada(s)`:''}</span><span>Total: ${money(tot)}</span></div>
-    ${tot>0?`<div class="regtot" style="background:var(--cafemed);font-size:13px"><span>💵 Efectivo: ${money(totEf)}</span><span>📱 Yape: ${money(totYa)}</span><span>Sin registrar: ${money(sinPago)}</span></div>`:''}
+    ${tot>0?`<div class="regtot" style="background:var(--cafemed);font-size:13px"><span>💵 Efectivo: ${money(totEf)}</span><span>📱 Yape: ${money(totYa)}</span><span>Sin cobrar: ${money(sinPago)}</span></div>`:''}
     ${cards || '<div class="empty">Aún no hay comandas registradas.</div>'}
     ${state.orders.length?`<button class="csvbtn" onclick="csv()">Descargar CSV para cuadre</button>
-    <button class="csvbtn ${armReset?'':''}" style="background:${armReset?'#7a1f14':'var(--rojo)'}" onclick="resetDemo()">${armReset?'¿Seguro? Toca de nuevo para borrar todo':'Reiniciar demo'}</button>`:''}
+    <button class="csvbtn" style="background:${armReset?'#7a1f14':'var(--rojo)'}" onclick="resetDemo()">${armReset?'¿Seguro? Toca de nuevo para borrar todo':'Reiniciar demo'}</button>`:''}
   </main>`;
 }
 function resetDemo(){
@@ -518,7 +675,9 @@ function rCuenta(){
     <div class="tline"><span>${i.qty}× ${esc(i.name)}</span><span>${money(i.price*i.qty)}</span></div>
     ${modsTxt(i)?`<div class="tdet">${esc(modsTxt(i))}</div>`:''}`).join('');
   const sal = salioEn(o);
-  const pendientes = o.items.some(i=>i.estado!=='entregado' && i.estado!=='anulado');
+  const pendientesEntrega = o.items.some(i=>i.estado!=='entregado' && i.estado!=='anulado');
+  const pgs = pagosDe(o), pend = pendienteDe(o);
+  const pagosLineas = pgs.map(p=>`<div class="tline"><span>${p.metodo==='yape'?'📱 Yape':'💵 Efectivo'}${p.detalle?' ('+esc(p.detalle)+')':''}</span><span>${money(p.monto)}</span></div>`).join('');
   return `<div class="ovl" onclick="if(event.target===this){cuentaId=null;render()}"><div class="modal">
     <div class="ticket" id="ticketPrint">
       <div style="text-align:center;font-weight:800">PUEBLO CAFE BAR</div>
@@ -531,17 +690,105 @@ function rCuenta(){
       ${lines}
       <hr>
       <div class="tline" style="font-weight:800;font-size:15px"><span>TOTAL</span><span>${money(t)}</span></div>
-      ${o.pago?`<div class="tline"><span>Pago</span><span>${o.pago==='yape'?'Yape':'Efectivo'}</span></div>`:''}
+      ${pagosLineas ? '<hr>' + pagosLineas + (pend>0.005?`<div class="tline"><span>Pendiente</span><span>${money(pend)}</span></div>`:'') : ''}
       <div style="text-align:center;font-size:11px;margin-top:6px">¡Gracias por su visita!</div>
     </div>
-    <div class="gl" style="margin-top:12px;font-size:12px;font-weight:700;color:var(--cafemed)">MÉTODO DE PAGO</div>
-    <div class="pagochips">
-      <button class="${o.pago==='efectivo'?'sel':''}" onclick="setPago(${o.id},'efectivo')">💵 Efectivo</button>
-      <button class="${o.pago==='yape'?'sel':''}" onclick="setPago(${o.id},'yape')">📱 Yape</button>
-    </div>
+    ${pend>0.005 ? `
+      <div class="gl" style="margin-top:12px;font-size:12px;font-weight:700;color:var(--cafemed)">COBRAR ${money(pend)}</div>
+      <div class="pagochips">
+        <button onclick="setPago(${o.id},'efectivo')">💵 Efectivo</button>
+        <button onclick="setPago(${o.id},'yape')">📱 Yape</button>
+      </div>
+      <button class="splitbtn" onclick="openSplit(${o.id})">➗ Dividir cuenta por ítems</button>`
+    : `<div style="text-align:center;color:var(--verde);font-weight:800;margin:12px 0">✓ Cuenta saldada</div>`}
     <button class="add" onclick="window.print()">🖨 Imprimir / guardar PDF</button>
-    ${pendientes?`<button class="splitbtn" onclick="entregarTodo(${o.id})">Marcar todo entregado (cierre en caja)</button>`:''}
+    ${pendientesEntrega?`<button class="splitbtn" style="background:var(--cafemed)" onclick="entregarTodo(${o.id})">Marcar todo entregado</button>`:''}
     <button class="cls" onclick="cuentaId=null;render()">Cerrar</button>
+  </div></div>`;
+}
+/* ---------- DIVIDIR CUENTA POR ÍTEMS ---------- */
+function splitUnits(o){
+  const u = [];
+  o.items.filter(i=>i.estado!=='anulado').forEach(it=>{
+    for(let n=0;n<it.qty;n++) u.push({ key: it.uid+'#'+n, uid: it.uid, name: it.name, price: it.price, mods: modsTxt(it) });
+  });
+  return u;
+}
+function openSplit(oid){
+  const o = state.orders.find(x=>x.id===oid); if(!o) return;
+  if(estaPagado(o)){ toast('La cuenta ya está saldada'); return; }
+  const personas = [], asign = {};
+  pagosDe(o).forEach((p, idx)=>{
+    if(p.unitKeys){ const pid = 'p'+idx; personas.push({ id: pid, metodo: p.metodo, pagado: true }); p.unitKeys.forEach(k=>asign[k]=pid); }
+  });
+  let nid = personas.length;
+  personas.push({ id:'p'+(nid++), metodo:null, pagado:false });
+  personas.push({ id:'p'+(nid++), metodo:null, pagado:false });
+  splitModal = { oid, personas, asign, nextId: nid };
+  cuentaId = null; render();
+}
+function splitAssign(k, pid){
+  const cur = splitModal.asign[k];
+  if(cur){ const cp = splitModal.personas.find(p=>p.id===cur); if(cp && cp.pagado){ toast('Esa unidad ya fue cobrada'); return; } }
+  const tp = splitModal.personas.find(p=>p.id===pid); if(!tp || tp.pagado) return;
+  splitModal.asign[k] = (cur === pid) ? null : pid;   // volver a tocar la misma = desasignar
+  render();
+}
+function splitAddPersona(){ splitModal.personas.push({ id:'p'+(splitModal.nextId++), metodo:null, pagado:false }); render(); }
+function splitSetMetodo(pid, metodo){ const p = splitModal.personas.find(x=>x.id===pid); if(p && !p.pagado){ p.metodo = metodo; render(); } }
+function splitCobrar(pid){
+  const o = state.orders.find(x=>x.id===splitModal.oid); if(!o) return;
+  const p = splitModal.personas.find(x=>x.id===pid); if(!p || p.pagado) return;
+  if(!p.metodo){ toast('Elige método de pago para esta persona'); return; }
+  const units = splitUnits(o).filter(u=>splitModal.asign[u.key]===pid);
+  if(!units.length){ toast('Asigna ítems a esta persona primero'); return; }
+  const monto = Math.round(units.reduce((s,u)=>s+u.price,0)*100)/100;
+  o.pagos = pagosDe(o).slice();
+  o.pagos.push({ monto, metodo: p.metodo, unitKeys: units.map(u=>u.key), detalle: units.map(u=>u.name).join(', ') });
+  delete o.pago;
+  p.pagado = true;
+  store.saveOrder(o);
+  toast('Cobrado ' + money(monto) + ' (' + (p.metodo==='yape'?'Yape':'Efectivo') + ')');
+  if(pendienteDe(o) < 0.005 && splitUnits(o).every(u=>splitModal.asign[u.key])){ splitModal = null; cuentaId = o.id; toast('Cuenta saldada ✓'); }
+  render();
+}
+const PCOL = ['#2E5D7D','#B5722A','#2E7D46','#742284','#B03A2E','#0E7C7B','#8A6D00','#37474F'];
+function rSplit(){
+  const o = state.orders.find(x=>x.id===splitModal.oid); if(!o){ splitModal=null; return ''; }
+  const units = splitUnits(o);
+  const total = orderTotal(o), pagado = pagadoDe(o), pend = pendienteDe(o);
+  const asignado = units.filter(u=>splitModal.asign[u.key]).reduce((s,u)=>s+u.price,0);
+  const unitRows = units.map(u=>{
+    const cur = splitModal.asign[u.key];
+    const chips = splitModal.personas.map((p,i)=>{
+      const on = cur===p.id;
+      return `<button class="pchip ${on?'sel':''}" style="${on?`background:${PCOL[i%8]};color:#fff;border-color:${PCOL[i%8]}`:''}" onclick="splitAssign('${u.key}','${p.id}')">P${i+1}${p.pagado?'✓':''}</button>`;
+    }).join('');
+    return `<div class="uline"><div><b>${esc(u.name)}</b> <span style="color:var(--acento)">${money(u.price)}</span>${u.mods?`<div class="det">${esc(u.mods)}</div>`:''}</div><div class="pchips">${chips}</div></div>`;
+  }).join('');
+  const personaCards = splitModal.personas.map((p,i)=>{
+    const sub = units.filter(u=>splitModal.asign[u.key]===p.id).reduce((s,u)=>s+u.price,0);
+    if(p.pagado){
+      return `<div class="pcard" style="border-color:${PCOL[i%8]};opacity:.7"><b>Persona ${i+1}</b> · ${money(sub)} · ${p.metodo==='yape'?'📱 Yape':'💵 Efectivo'} <span class="badge b-entregado">COBRADO</span></div>`;
+    }
+    return `<div class="pcard" style="border-color:${PCOL[i%8]}">
+      <b>Persona ${i+1}</b> · Subtotal <b>${money(sub)}</b>
+      <div class="pagochips" style="margin:6px 0">
+        <button class="${p.metodo==='efectivo'?'sel':''}" onclick="splitSetMetodo('${p.id}','efectivo')">💵 Efectivo</button>
+        <button class="${p.metodo==='yape'?'sel':''}" onclick="splitSetMetodo('${p.id}','yape')">📱 Yape</button>
+      </div>
+      <button class="stbtn st-listo" style="width:100%" onclick="splitCobrar('${p.id}')">Cobrar ${money(sub)}</button>
+    </div>`;
+  }).join('');
+  return `<div class="ovl" onclick="if(event.target===this){splitModal=null;render()}"><div class="modal">
+    <h3>Dividir cuenta · #${o.id}</h3>
+    <div class="mp" style="font-size:12px;color:var(--gris);font-weight:400">Asigna cada ítem a una persona (P1, P2…) y cobra por separado.</div>
+    <div class="splitfoot">Total ${money(total)} · Pagado ${money(pagado)} · <b>Pendiente ${money(pend)}</b>${asignado<total-0.005?` · <span style="color:var(--rojo)">sin asignar ${money(total-asignado)}</span>`:''}</div>
+    <div class="gl">Ítems</div>
+    ${unitRows}
+    <div class="gl" style="margin-top:10px;display:flex;align-items:center;gap:8px">Personas <button class="pchip" onclick="splitAddPersona()">+ Persona</button></div>
+    ${personaCards}
+    <button class="cls" onclick="splitModal=null;render()">Cerrar</button>
   </div></div>`;
 }
 function entregarTodo(oid){
@@ -550,13 +797,16 @@ function entregarTodo(oid){
   store.saveOrder(o); toast('Comanda #'+oid+' cerrada'); render();
 }
 function csv(){
-  let rows = [['Comanda','Tipo','Mesa/Cliente','Mesero','Fecha','Hora','Producto','Cant','Detalle','Precio','Subtotal','Estado','MinSalida','Pago']];
-  state.orders.forEach(o=>o.items.forEach(i=>{
-    const d = new Date(o.ts);
-    rows.push([o.id, o.tipo==='llevar'?'Llevar':'Mesa', o.mesa||'', o.mesero||'', d.toLocaleDateString(), hhmm(o.ts), i.name, i.qty,
-      modsTxt(i).replace(/,/g,';'), i.price, i.price*i.qty, o.anulada?'anulado':i.estado,
-      i.tsListo?elapsedMin(o.ts,i.tsListo):'', o.pago||'']);
-  }));
+  let rows = [['Comanda','Tipo','Mesa/Cliente','Mesero','Fecha','Hora','Producto','Cant','Detalle','Precio','Subtotal','Estado','MinSalida','Pagos']];
+  state.orders.forEach(o=>{
+    const pagosTxt = pagosDe(o).map(p=>p.metodo+':'+p.monto).join(' | ');
+    o.items.forEach(i=>{
+      const d = new Date(o.ts);
+      rows.push([o.id, o.tipo==='llevar'?'Llevar':'Mesa', o.mesa||'', o.mesero||'', d.toLocaleDateString(), hhmm(o.ts), i.name, i.qty,
+        modsTxt(i).replace(/,/g,';'), i.price, i.price*i.qty, o.anulada?'anulado':i.estado,
+        i.tsListo?elapsedMin(o.ts,i.tsListo):'', pagosTxt]);
+    });
+  });
   const txt = rows.map(r=>r.join(',')).join('\n');
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob(['﻿'+txt], {type:'text/csv;charset=utf-8'}));
@@ -669,7 +919,7 @@ function addReceta(){
 function delReceta(id){ state.recetas = state.recetas.filter(x=>x.id!==id); store.saveList('recetas', state.recetas); render(); }
 
 /* ---------- NAV ---------- */
-function go(v){ view = v; modal = null; chkModal = null; cuentaId = null; recetaModal = null; armAnular = null; armAnularItem = null; armReset = false; render(); }
+function go(v){ view = v; modal = null; chkModal = null; cuentaId = null; recetaModal = null; splitModal = null; armAnular = null; armAnularItem = null; armReset = false; addTargetId = null; cierreMode = false; render(); }
 window.go = go; window.goCocina = goCocina; window.setTab = setTab; window.openItem = openItem;
 window.pick = pick; window.addCart = addCart; window.rmCart = rmCart; window.sendOrder = sendOrder;
 window.setEstado = setEstado; window.openChk = openChk; window.deliver = deliver; window.csv = csv;
@@ -681,11 +931,22 @@ window.addCompra = addCompra; window.toggleCompra = toggleCompra; window.delComp
 window.verReceta = verReceta; window.toggleAllListos = toggleAllListos;
 window.addTarea = addTarea; window.toggleTarea = toggleTarea; window.delTarea = delTarea; window.resetTareas = resetTareas;
 window.addReceta = addReceta; window.delReceta = delReceta;
+window.startAgregar = startAgregar; window.cancelAgregar = cancelAgregar; window.agregarItems = agregarItems;
+window.abrirCaja = abrirCaja; window.cerrarCaja = cerrarCaja; window.reabrirCaja = reabrirCaja;
+window.openSplit = openSplit; window.splitAssign = splitAssign; window.splitAddPersona = splitAddPersona;
+window.splitSetMetodo = splitSetMetodo; window.splitCobrar = splitCobrar;
+window.cronoToggle = cronoToggle; window.cronoReset = cronoReset; window.cronoName = cronoName;
 
 window.pinPress = pinPress; window.pinBack = pinBack; window.logout = logout;
 
 // refresca los contadores de tiempo ("hace X min") cada 30 s
-setInterval(()=>{ if((view==='cocina' || view==='mesero') && !modal && !chkModal && cuentaId===null) render(); }, 30000);
+setInterval(()=>{ if((view==='cocina' || view==='mesero') && !modal && !chkModal && cuentaId===null && !splitModal) render(); }, 30000);
+// tick de 1 s para los cronómetros de cocción (actualiza solo el texto, sin re-render)
+setInterval(()=>{
+  if(view==='cocina' && station==='salados'){
+    cronos.forEach((c,i)=>{ if(c.run){ const el = document.getElementById('cronot'+i); if(el) el.textContent = fmtCrono(cronoMs(c)); } });
+  }
+}, 1000);
 
 // arranque: el store notifica cada cambio de datos (local o Firebase)
 store.init(s => { state = s; render(); });
