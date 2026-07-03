@@ -185,3 +185,7 @@
 .dispnm{flex:1;}
 .dispitem.off .dispnm b{text-decoration:line-through; opacity:.7;}
 .dispitem .agot{color:var(--rojo); font-weight:800;}
+
+/* ===== Producto fuera de carta ===== */
+.fctabtn{width:100%; border:1.5px dashed var(--cafemed); background:var(--crema); color:var(--cafe); font-weight:700; font-size:14px; padding:11px; border-radius:10px; margin-bottom:10px; cursor:pointer;}
+.fctatag{display:inline-block; background:var(--cafemed); color:#fff; font-size:10px; font-weight:800; padding:1px 6px; border-radius:7px; vertical-align:middle;}

@@ -23,6 +23,7 @@ let mesasList = (typeof MESAS_CONFIG !== 'undefined' && Array.isArray(MESAS_CONF
   : Array.from({length:5}, (_,i)=>'Mesa ' + (i+1));
 let query = '';             // texto del buscador
 let modal = null;           // {item, qty, sel:{}, notas, editIdx?}
+let customModal = null;     // producto fuera de carta {desc, precio, qty, station, notas}
 let chkModal = null;        // {orderId, itemUid}
 let cuentaId = null;        // comanda mostrada en "cuenta"
 let recetaModal = null;     // receta abierta desde cocina
@@ -75,6 +76,7 @@ function render(){
   else if(view === 'historial') h = rHistorial();
   else if(view === 'gestion') h = rGestion();
   if(modal) h += rModal();
+  if(customModal) h += rCustom();
   if(chkModal) h += rChk();
   if(cuentaId !== null) h += rCuenta();
   if(recetaModal) h += rRecetaModal();
@@ -238,6 +240,7 @@ function rMesero(){
       <input id="buscar" type="search" placeholder="🔍 Buscar producto (ej. fresa, alitas, mojito…)" value="${esc(query)}" oninput="doSearch(this.value)">
       <button class="clr" onclick="document.getElementById('buscar').value='';doSearch('')">✕</button>
     </div>
+    <button class="fctabtn" onclick="openCustom()">➕ Producto fuera de carta</button>
     <div id="srchres">${query.trim()?rResults():''}</div>
     <div id="catwrap" style="${query.trim()?'display:none':''}">
       <div class="tabs">${cats}</div>
@@ -468,6 +471,42 @@ function addCart(){
 function rmCart(i){ cart.splice(i,1); render(); }
 function setTab(c){ tab = c; render(); }
 
+/* ---------- PRODUCTO FUERA DE CARTA ---------- */
+function openCustom(){ customModal = { desc:'', precio:'', qty:1, station:'salados', notas:'' }; render(); }
+function rCustom(){
+  const m = customModal;
+  return `<div class="ovl" onclick="if(event.target===this){customModal=null;render()}"><div class="modal">
+    <h3>➕ Producto fuera de carta</h3>
+    <div class="mp" style="font-size:12px;color:var(--gris);font-weight:400">Para algo que no está en la carta pero sí se puede vender (ej. una porción de papas).</div>
+    <div class="grp"><div class="gl">Descripción</div>
+      <input id="cDesc" placeholder="Ej. Porción de papas fritas" value="${esc(m.desc)}" oninput="customModal.desc=this.value"></div>
+    <div class="grp"><div class="gl">Precio (S/)</div>
+      <input id="cPrecio" type="number" inputmode="decimal" placeholder="Ej. 8" value="${m.precio}" oninput="customModal.precio=this.value"></div>
+    <div class="grp"><div class="gl">¿A qué cocina va?</div>
+      <div class="opts">
+        <button class="${m.station==='salados'?'sel':''}" onclick="customModal.station='salados';render()">🍟 Salados</button>
+        <button class="${m.station==='dulces'?'sel':''}" onclick="customModal.station='dulces';render()">🍰 Dulces / barra</button>
+      </div></div>
+    <div class="grp"><div class="gl">Cantidad</div><div class="qty">
+      <button onclick="customModal.qty=Math.max(1,customModal.qty-1);render()">−</button><span>${m.qty}</span>
+      <button onclick="customModal.qty++;render()">+</button></div></div>
+    <div class="grp"><div class="gl">Notas (opcional)</div>
+      <textarea oninput="customModal.notas=this.value" placeholder="Ej. sin sal, con mayonesa aparte">${esc(m.notas)}</textarea></div>
+    <button class="add" onclick="addCustom()">Agregar a la comanda${(parseFloat(m.precio)>0)?' · '+money(Math.round(parseFloat(m.precio)*100)/100*m.qty):''}</button>
+    <button class="cls" onclick="customModal=null;render()">Cancelar</button>
+  </div></div>`;
+}
+function addCustom(){
+  const m = customModal;
+  const desc = (m.desc || '').trim();
+  const precio = parseFloat(m.precio);
+  if(!desc){ toast('Escribe la descripción del producto'); return; }
+  if(isNaN(precio) || precio <= 0){ toast('Ingresa un precio válido (mayor a 0)'); return; }
+  cart.push({ name: desc, price: Math.round(precio*100)/100, station: m.station, cat:'Fuera de carta',
+    qty: m.qty, mods:{}, notas:(m.notas || '').trim(), fueraCarta:true });
+  customModal = null; toast('Producto fuera de carta agregado ✓'); render();
+}
+
 let _sending = false;   // candado: evita crear comandas duplicadas/vacías por doble toque o lag
 async function sendOrder(){
   if(!enPractica() && !cajaHoyAbierta()){ toast('Abre la caja primero para atender'); return; }
@@ -529,7 +568,7 @@ function rCocina(){
       const rec = recetaFor(it.name);
       const recBtn = rec ? `<button class="stbtn" style="background:var(--cafemed)" onclick="verReceta('${esc(it.name)}')">📖 Ver receta</button>` : '';
       const late = isLate(o, it) ? `<span class="late">⏰ PEDIDO RETRASADO · ${elapsedMin(o.ts, Date.now())} min</span> ` : '';
-      return `<div class="kitem">${late}<div class="knm">${it.qty}× ${esc(it.name)}</div>
+      return `<div class="kitem">${late}<div class="knm">${it.qty}× ${esc(it.name)}${it.fueraCarta?' <span class="fctatag">fuera de carta</span>':''}</div>
         <div class="kmods">${esc(modsTxt(it))||'Sin modificadores'}</div>${btn}${recBtn}</div>`;
     }).join('');
     if(!items) return '';
@@ -1154,7 +1193,7 @@ function addReceta(){
 function delReceta(id){ state.recetas = state.recetas.filter(x=>x.id!==id); store.saveList('recetas', state.recetas); render(); }
 
 /* ---------- NAV ---------- */
-function go(v){ view = v; modal = null; chkModal = null; cuentaId = null; recetaModal = null; splitModal = null; armAnular = null; armAnularItem = null; armBorrarP = false; armArchivar = false; addTargetId = null; cierreMode = false; boletaEdit = false; histDay = null; render(); }
+function go(v){ view = v; modal = null; customModal = null; chkModal = null; cuentaId = null; recetaModal = null; splitModal = null; armAnular = null; armAnularItem = null; armBorrarP = false; armArchivar = false; addTargetId = null; cierreMode = false; boletaEdit = false; histDay = null; render(); }
 window.go = go; window.goCocina = goCocina; window.setTab = setTab; window.openItem = openItem;
 window.pick = pick; window.addCart = addCart; window.rmCart = rmCart; window.sendOrder = sendOrder;
 window.setEstado = setEstado; window.openChk = openChk; window.deliver = deliver; window.csv = csv;
@@ -1162,6 +1201,7 @@ window.setTipo = setTipo; window.openEdit = openEdit; window.splitCart = splitCa
 window.entregarTodo = entregarTodo; window.doSearch = doSearch;
 window.setModo = setModo; window.borrarPractica = borrarPractica; window.archivarDia = archivarDia; window.csvHistorial = csvHistorial; window.toggleHistDay = toggleHistDay;
 window.pickProd = pickProd; window.toggleDisp = toggleDisp; window.resetDisp = resetDisp;
+window.openCustom = openCustom; window.addCustom = addCustom;
 window.toggleEntrega = toggleEntrega; window.anularItem = anularItem; window.openChkMulti = openChkMulti;
 window.setPago = setPago; window.setGtab = setGtab;
 window.addCompra = addCompra; window.toggleCompra = toggleCompra; window.delCompra = delCompra; window.clearCompras = clearCompras;
