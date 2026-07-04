@@ -1,4 +1,4 @@
-# Pueblo CaféBar — Sistema de Comandas 
+# Pueblo CaféBar — Sistema de Comandas
 
 Aplicación web para la gestión operativa de Pueblo CaféBar (Cajabamba):
 toma de pedidos con modificadores, cocinas separadas (salados / dulces-barra),
