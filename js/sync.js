@@ -38,6 +38,10 @@ function normOrder(o){
     o.pagos = Array.isArray(o.pagos) ? o.pagos.filter(Boolean) : Object.values(o.pagos);
     o.pagos.forEach(p => { if(p && p.unitKeys && !Array.isArray(p.unitKeys)) p.unitKeys = Object.values(p.unitKeys); });
   }
+  if(o.snapAnterior){
+    o.snapAnterior = Array.isArray(o.snapAnterior) ? o.snapAnterior.filter(Boolean) : Object.values(o.snapAnterior);
+    o.snapAnterior.forEach(s => { if(s && s.items && !Array.isArray(s.items)) s.items = Object.values(s.items); });
+  }
   return o;
 }
 function clean(obj){ return JSON.parse(JSON.stringify(obj)); }

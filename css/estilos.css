@@ -189,3 +189,7 @@
 /* ===== Producto fuera de carta ===== */
 .fctabtn{width:100%; border:1.5px dashed var(--cafemed); background:var(--crema); color:var(--cafe); font-weight:700; font-size:14px; padding:11px; border-radius:10px; margin-bottom:10px; cursor:pointer;}
 .fctatag{display:inline-block; background:var(--cafemed); color:#fff; font-size:10px; font-weight:800; padding:1px 6px; border-radius:7px; vertical-align:middle;}
+
+/* ===== Edición manual de cuentas (auditoría) ===== */
+.manualbadge{background:#E6F2F1; border:1.5px solid #0E7C7B; color:#0B5E5D; border-radius:10px; padding:8px 12px; font-size:12.5px; font-weight:700; margin:10px 0; text-align:center;}
+.badge.b-manualtag{background:#0E7C7B; color:#fff; margin-left:4px;}

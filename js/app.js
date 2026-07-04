@@ -37,6 +37,10 @@ let boletaEdit = false;     // en la cuenta: formulario de boleta desplegado
 let armBorrarP = false;     // borrar pedidos de práctica (doble toque)
 let armArchivar = false;    // archivar el día (doble toque)
 let histDay = null;         // día expandido en el historial (solo lectura)
+let quitarMode = false;     // en la cuenta: sección "quitar ítem" desplegada
+let manualAddModal = null;  // agregar ítem servido a una cuenta (admin) {oid, desc, precio, qty, notas}
+let ventaModal = null;      // registrar venta manual completa (admin)
+let snapModal = null;       // ver versión anterior de una cuenta editada {oid}
 
 let toastTimer = null;
 function toast(msg){
@@ -81,6 +85,9 @@ function render(){
   if(cuentaId !== null) h += rCuenta();
   if(recetaModal) h += rRecetaModal();
   if(splitModal) h += rSplit();
+  if(manualAddModal) h += rManualAdd();
+  if(ventaModal) h += rVentaManual();
+  if(snapModal) h += rSnap();
   app.innerHTML = h;
 }
 
@@ -112,8 +119,9 @@ function pagadoDe(o){ return pagosDe(o).reduce((s,p)=>s+(p.monto||0),0); }
 function pendienteDe(o){ return Math.max(0, orderTotal(o) - pagadoDe(o)); }
 function estaPagado(o){ return orderTotal(o) > 0 && pendienteDe(o) < 0.005; }
 function ventasMetodo(metodo){
+  // excluye prácticas y pagos marcados noCaja (ventas de días anteriores cuyo dinero no está en la caja de hoy)
   return state.orders.filter(o=>!o.anulada && !o.practica).reduce((s,o)=>
-    s + pagosDe(o).filter(p=>p.metodo===metodo).reduce((a,p)=>a+(p.monto||0),0), 0);
+    s + pagosDe(o).filter(p=>p.metodo===metodo && !p.noCaja).reduce((a,p)=>a+(p.monto||0),0), 0);
 }
 
 function bannerTxt(){
@@ -770,7 +778,8 @@ function rRegistro(){
     }
     const sal = salioEn(o);
     const anulados = o.items.filter(i=>i.estado==='anulado').length;
-    return `<div class="regcard${o.practica?' practcard':''}"><b>#${o.id}</b> · ${tipoTxt(o)} ${practTag(o)}${o.mesero?' · '+esc(o.mesero):''} · ${new Date(o.ts).toLocaleDateString()} ${hhmm(o.ts)}
+    const manTag = o.manual ? '<span class="badge b-manualtag">✏️ MANUAL</span>' : (o.editado ? '<span class="badge b-manualtag">✏️ EDITADA</span>' : '');
+    return `<div class="regcard${o.practica?' practcard':''}"><b>#${o.id}</b> · ${tipoTxt(o)} ${practTag(o)}${manTag}${o.mesero?' · '+esc(o.mesero):''} · ${new Date(o.ts).toLocaleDateString()} ${hhmm(o.ts)}
       ${badge}${pagoBadge}<br>
       <span style="color:var(--cafemed)">${o.items.map(i=>(i.estado==='anulado'?'<s>':'')+i.qty+'× '+esc(i.name)+(i.estado==='anulado'?'</s>':'')).join(', ')}</span>
       ${anulados && !o.anulada?`<div style="font-size:11.5px;color:var(--rojo)">${anulados} ítem(s) anulado(s), descontado(s) del total</div>`:''}
@@ -794,6 +803,7 @@ function rRegistro(){
   return rHeader('Registro del día','CAJA') + `<main>
     ${rCaja()}
     ${modoCtrl}
+    ${esAdmin()?`<button class="csvbtn" style="background:#0E7C7B" onclick="openVentaManual()">✏️ Registrar venta manual (olvido / falla del sistema)</button>`:''}
     <div class="regtot"><span>${validas.length} venta(s)${anuladas?` · ${anuladas} anulada(s)`:''}${nPract?` · ${nPract} práctica`:''}</span><span>Total: ${money(tot)}</span></div>
     ${tot>0?`<div class="regtot" style="background:var(--cafemed);font-size:13px"><span>💵 Efectivo: ${money(totEf)}</span><span>📱 Yape: ${money(totYa)}</span><span>Sin cobrar: ${money(sinPago)}</span></div>`:''}
     ${cards || '<div class="empty">Aún no hay comandas registradas.</div>'}
@@ -846,6 +856,7 @@ function rHistorial(){
         <b>#${o.id}</b> · ${tipoTxt(o)}${o.mesero?' · '+esc(o.mesero):''} · ${hhmm(o.ts)} ${badge}<br>
         <span style="color:var(--cafemed)">${o.items.map(i=>(i.estado==='anulado'?'<s>':'')+i.qty+'× '+esc(i.name)+(i.estado==='anulado'?'</s>':'')).join(', ')}</span>
         ${o.boleta?`<div style="font-size:11.5px;color:var(--cafemed)">🧾 Boleta · DNI ${esc(o.boleta.dni)}${o.boleta.nombre?' · '+esc(o.boleta.nombre):''}</div>`:''}
+        ${o.manual||o.editado?`<div style="font-size:11.5px;color:#0E7C7B;font-weight:700">✏️ ${o.manual?'Agregada':'Modificada'} manualmente${o.manualPor?' por '+esc(o.manualPor):''}${o.manualTs?' el '+new Date(o.manualTs).toLocaleDateString():''}</div>`:''}
         <div style="font-weight:800;color:var(--acento)">${money(t)}</div>
       </div>`;
     }).join('') : '';
@@ -874,7 +885,8 @@ function rCuenta(){
   const t = orderTotal(o);
   const lines = o.items.filter(i=>i.estado!=='anulado').map(i=>`
     <div class="tline"><span>${i.qty}× ${esc(i.name)}</span><span>${money(i.price*i.qty)}</span></div>
-    ${modsTxt(i)?`<div class="tdet">${esc(modsTxt(i))}</div>`:''}`).join('');
+    ${modsTxt(i)?`<div class="tdet">${esc(modsTxt(i))}</div>`:''}
+    ${i.manual?`<div class="tdet">✏ agregado manualmente</div>`:''}`).join('');
   const sal = salioEn(o);
   const pendientesEntrega = o.items.some(i=>i.estado!=='entregado' && i.estado!=='anulado');
   const pgs = pagosDe(o), pend = pendienteDe(o);
@@ -902,7 +914,7 @@ function rCuenta(){
         <button class="add" onclick="guardarBoleta(${o.id})">Guardar datos de boleta</button>
         <button class="cls" onclick="toggleBoleta()">Cancelar</button></div>`
     : `<button class="splitbtn" style="background:var(--cafemed)" onclick="toggleBoleta()">🧾 ¿Desea boleta? Registrar datos del cliente</button>`;
-  return `<div class="ovl" onclick="if(event.target===this){cuentaId=null;boletaEdit=false;render()}"><div class="modal">
+  return `<div class="ovl" onclick="if(event.target===this){cuentaId=null;boletaEdit=false;quitarMode=false;render()}"><div class="modal">
     <div class="ticket" id="ticketPrint">
       <div style="text-align:center;font-weight:800">PUEBLO CAFE BAR</div>
       <div style="text-align:center;font-size:11px">Sabor, tradición y buenos momentos</div>
@@ -918,6 +930,9 @@ function rCuenta(){
       ${boletaTicket}
       <div style="text-align:center;font-size:11px;margin-top:6px">¡Gracias por su visita!</div>
     </div>
+    ${o.manual?`<div class="manualbadge">✏️ Cuenta AGREGADA MANUALMENTE${o.manualPor?' por '+esc(o.manualPor):''}${o.manualTs?' · '+new Date(o.manualTs).toLocaleDateString()+' '+hhmm(o.manualTs):''}</div>`:''}
+    ${o.editado?`<div class="manualbadge">✏️ MODIFICADA MANUALMENTE · <button class="linklike" onclick="openSnap(${o.id})">ver anterior</button></div>`:''}
+    ${rQuitarSec(o)}
     ${pend>0.005 ? `
       <div class="gl" style="margin-top:12px;font-size:12px;font-weight:700;color:var(--cafemed)">COBRAR ${money(pend)}</div>
       <div class="pagochips">
@@ -926,11 +941,27 @@ function rCuenta(){
       </div>
       <button class="splitbtn" onclick="openSplit(${o.id})">➗ Dividir cuenta por ítems</button>`
     : `<div style="text-align:center;color:var(--verde);font-weight:800;margin:12px 0">✓ Cuenta saldada</div>`}
+    ${esAdmin() && !o.anulada ? `<button class="splitbtn" style="background:#0E7C7B" onclick="openManualAdd(${o.id})">✏️ Agregar ítem servido (manual, sin cocina)</button>`:''}
     ${boletaSection}
     <button class="add" onclick="window.print()">🖨 Imprimir / guardar PDF</button>
     ${pendientesEntrega?`<button class="splitbtn" style="background:var(--cafemed)" onclick="entregarTodo(${o.id})">Marcar todo entregado</button>`:''}
-    <button class="cls" onclick="cuentaId=null;boletaEdit=false;render()">Cerrar</button>
+    <button class="cls" onclick="cuentaId=null;boletaEdit=false;quitarMode=false;render()">Cerrar</button>
   </div></div>`;
+}
+/* ---------- QUITAR ÍTEM ANTES DE COBRAR (anulación con rastro) ---------- */
+function rQuitarSec(o){
+  const puedeQuitar = !o.anulada && pagadoDe(o) === 0 && o.items.some(i=>i.estado!=='anulado');
+  if(!puedeQuitar) return '';
+  if(!quitarMode) return `<button class="cls" style="display:block;width:100%" onclick="quitarMode=true;render()">➖ Quitar un ítem que no se llevó (antes de cobrar)…</button>`;
+  const rows = o.items.filter(i=>i.estado!=='anulado').map(i=>{
+    const arm = armAnularItem && armAnularItem.oid===o.id && armAnularItem.uid===i.uid;
+    return `<div class="uline"><span>${i.qty}× ${esc(i.name)} <span style="color:var(--acento)">${money(i.price*i.qty)}</span></span>
+      <button class="anularbtn mini ${arm?'armado':''}" style="margin:0" onclick="anularItem(${o.id},${i.uid})">${arm?'¿Seguro? Toca de nuevo':'Quitar (anular)'}</button></div>`;
+  }).join('');
+  return `<div class="boletabox">
+    <div class="gl" style="font-weight:700;color:var(--cafemed)">Quitar ítem — queda ANULADO (tachado), no se borra</div>
+    ${rows}
+    <button class="cls" onclick="quitarMode=false;render()">Listo</button></div>`;
 }
 /* ---------- BOLETA / DATOS DE FACTURACIÓN ---------- */
 function toggleBoleta(){ boletaEdit = !boletaEdit; render(); }
@@ -947,6 +978,137 @@ function guardarBoleta(oid){
 function quitarBoleta(oid){
   const o = state.orders.find(x=>x.id===oid); if(!o) return;
   delete o.boleta; store.saveOrder(o); boletaEdit = false; toast('Datos de boleta eliminados'); render();
+}
+
+/* ---------- EDICIÓN MANUAL DE CUENTAS (solo admin, con auditoría) ---------- */
+const prodDatalist = () => `<datalist id="prodlist">${Object.keys(PROD).map(n=>`<option value="${esc(n)}">`).join('')}</datalist>`;
+function openManualAdd(oid){
+  if(!esAdmin()){ toast('Solo el administrador puede editar cuentas'); return; }
+  manualAddModal = { oid, desc:'', precio:'', qty:1, notas:'' }; render();
+}
+function rManualAdd(){
+  const m = manualAddModal;
+  return `<div class="ovl" onclick="if(event.target===this){manualAddModal=null;render()}"><div class="modal">
+    <h3>✏️ Agregar ítem servido</h3>
+    <div class="mp" style="font-size:12px;color:var(--gris);font-weight:400">Para algo que se sirvió pero no se mandó a comanda. Entra como ENTREGADO, no pasa por cocina, y queda marcado "agregado manualmente".</div>
+    ${prodDatalist()}
+    <div class="grp"><div class="gl">Producto (elige de la carta o escribe libre)</div>
+      <input id="mDesc" list="prodlist" placeholder="Ej. Club sandwich" value="${esc(m.desc)}"
+        oninput="manualAddModal.desc=this.value; var p=PROD[this.value]; if(p){ manualAddModal.precio=p.p; document.getElementById('mPrecio').value=p.p; }"></div>
+    <div class="grp"><div class="gl">Precio (S/)</div>
+      <input id="mPrecio" type="number" inputmode="decimal" placeholder="Ej. 15" value="${m.precio}" oninput="manualAddModal.precio=this.value"></div>
+    <div class="grp"><div class="gl">Cantidad</div><div class="qty">
+      <button onclick="manualAddModal.qty=Math.max(1,manualAddModal.qty-1);render()">−</button><span>${m.qty}</span>
+      <button onclick="manualAddModal.qty++;render()">+</button></div></div>
+    <div class="grp"><div class="gl">Nota (opcional, ej. motivo)</div>
+      <textarea oninput="manualAddModal.notas=this.value" placeholder="Ej. se sirvió sin comanda">${esc(m.notas)}</textarea></div>
+    <button class="add" onclick="addManualItem()">Agregar a la cuenta</button>
+    <button class="cls" onclick="manualAddModal=null;render()">Cancelar</button>
+  </div></div>`;
+}
+function addManualItem(){
+  const m = manualAddModal;
+  const desc = (m.desc||'').trim(), precio = parseFloat(m.precio);
+  if(!desc){ toast('Escribe el producto'); return; }
+  if(isNaN(precio) || precio <= 0){ toast('Ingresa un precio válido'); return; }
+  const o = state.orders.find(x=>x.id===m.oid); if(!o){ manualAddModal=null; render(); return; }
+  // snapshot de la cuenta ANTES de editar (para "ver anterior")
+  o.snapAnterior = (o.snapAnterior || []).concat([{ ts: Date.now(), por: user?user.nombre:'', items: JSON.parse(JSON.stringify(o.items)) }]);
+  const uid = o.items.reduce((mx,i)=>Math.max(mx,i.uid),0) + 1;
+  const p = PROD[desc];
+  o.items.push({ uid, name: desc, price: Math.round(precio*100)/100, station: p?p.station:'salados', cat: p?p.cat:'Manual',
+    qty: m.qty, mods:{}, notas:(m.notas||'').trim(), estado:'entregado', tsEnt: Date.now(),
+    manual:true, manualPor: user?user.nombre:'', manualTs: Date.now() });
+  o.editado = true;
+  store.saveOrder(o); manualAddModal = null;
+  toast('Ítem agregado manualmente ✓ (marcado en la cuenta)'); render();
+}
+function openSnap(oid){ snapModal = { oid }; render(); }
+function rSnap(){
+  const o = state.orders.find(x=>x.id===snapModal.oid);
+  if(!o || !(o.snapAnterior||[]).length){ snapModal=null; return ''; }
+  const vers = o.snapAnterior.map((s,k)=>{
+    const tot = (s.items||[]).filter(i=>i.estado!=='anulado').reduce((a,i)=>a+i.price*i.qty,0);
+    const rows = (s.items||[]).map(i=>`<div class="tline"><span>${i.estado==='anulado'?'<s>':''}${i.qty}× ${esc(i.name)}${i.estado==='anulado'?'</s>':''}</span><span>${money(i.price*i.qty)}</span></div>`).join('');
+    return `<div class="boletabox" style="background:var(--blanco)">
+      <div class="gl" style="font-weight:700;color:var(--cafemed)">Versión ${k+1} · antes de la edición del ${new Date(s.ts).toLocaleDateString()} ${hhmm(s.ts)}${s.por?' ('+esc(s.por)+')':''}</div>
+      ${rows}<div class="tline" style="font-weight:800"><span>TOTAL entonces</span><span>${money(tot)}</span></div></div>`;
+  }).join('');
+  return `<div class="ovl" onclick="if(event.target===this){snapModal=null;render()}"><div class="modal">
+    <h3>📜 Versiones anteriores · #${o.id}</h3>
+    <div class="mp" style="font-size:12px;color:var(--gris);font-weight:400">Solo lectura. La cuenta actual no se altera.</div>
+    ${vers}
+    <button class="cls" onclick="snapModal=null;render()">Cerrar</button>
+  </div></div>`;
+}
+
+/* ---------- VENTA MANUAL COMPLETA (olvido / falla del sistema) ---------- */
+function hoyISO(){ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function openVentaManual(){
+  if(!esAdmin()){ toast('Solo el administrador'); return; }
+  ventaModal = { fecha: hoyISO(), mesa:'', items:[], metodo:'efectivo', enCaja:true, d:'', p:'', q:1 }; render();
+}
+function vmAddItem(){
+  const v = ventaModal, desc=(v.d||'').trim(), precio=parseFloat(v.p);
+  if(!desc){ toast('Escribe el producto'); return; }
+  if(isNaN(precio)||precio<=0){ toast('Precio válido, por favor'); return; }
+  v.items.push({ name:desc, price:Math.round(precio*100)/100, qty:v.q });
+  v.d=''; v.p=''; v.q=1; render();
+}
+function vmRmItem(i){ ventaModal.items.splice(i,1); render(); }
+function rVentaManual(){
+  const v = ventaModal;
+  const esHoy = v.fecha === hoyISO();
+  const tot = v.items.reduce((s,i)=>s+i.price*i.qty,0);
+  const itemRows = v.items.map((i,k)=>`<div class="uline"><span>${i.qty}× ${esc(i.name)} <span style="color:var(--acento)">${money(i.price*i.qty)}</span></span><button class="rm" onclick="vmRmItem(${k})">✕</button></div>`).join('');
+  return `<div class="ovl" onclick="if(event.target===this){ventaModal=null;render()}"><div class="modal">
+    <h3>✏️ Registrar venta manual</h3>
+    <div class="mp" style="font-size:12px;color:var(--gris);font-weight:400">Para ventas que no se registraron (olvido o falla del sistema). Queda marcada "agregada manualmente" y no pasa por cocina.</div>
+    ${prodDatalist()}
+    <div class="grp"><div class="gl">Fecha real de la venta</div>
+      <input id="vmFecha" type="date" value="${v.fecha}" max="${hoyISO()}" oninput="ventaModal.fecha=this.value;render()"></div>
+    <div class="grp"><div class="gl">Mesa / cliente (opcional)</div>
+      <input placeholder="Ej. Mesa 3 o nombre" value="${esc(v.mesa)}" oninput="ventaModal.mesa=this.value"></div>
+    <div class="grp"><div class="gl">Ítems</div>
+      ${itemRows || '<div class="det" style="margin-bottom:6px">Aún sin ítems.</div>'}
+      <div class="fieldrow"><input id="vmD" list="prodlist" placeholder="Producto" value="${esc(v.d)}"
+        oninput="ventaModal.d=this.value; var p=PROD[this.value]; if(p){ ventaModal.p=p.p; document.getElementById('vmP').value=p.p; }"></div>
+      <div class="fieldrow"><input id="vmP" type="number" inputmode="decimal" placeholder="Precio S/" value="${v.p}" oninput="ventaModal.p=this.value" style="max-width:120px">
+        <span style="align-self:center">×</span>
+        <input type="number" min="1" value="${v.q}" oninput="ventaModal.q=Math.max(1,parseInt(this.value)||1)" style="max-width:70px">
+        <button class="stbtn st-listo" style="margin:0;padding:10px 14px" onclick="vmAddItem()">+ Añadir</button></div></div>
+    <div class="grp"><div class="gl">Cobro</div><div class="opts">
+      <button class="${v.metodo==='efectivo'?'sel':''}" onclick="ventaModal.metodo='efectivo';render()">💵 Efectivo</button>
+      <button class="${v.metodo==='yape'?'sel':''}" onclick="ventaModal.metodo='yape';render()">📱 Yape</button>
+      <button class="${v.metodo===null?'sel':''}" onclick="ventaModal.metodo=null;render()">Sin cobrar</button></div></div>
+    ${v.metodo && !esHoy ? `<div class="grp"><div class="gl">¿Ese dinero está en la caja de HOY?</div><div class="opts">
+      <button class="${v.enCaja?'sel':''}" onclick="ventaModal.enCaja=true;render()">Sí, suma a la caja de hoy</button>
+      <button class="${!v.enCaja?'sel':''}" onclick="ventaModal.enCaja=false;render()">No, solo registrar la venta</button></div>
+      <div class="det" style="margin-top:4px">Si el dinero ya se contó en el cierre de ese día (salió como "sobra"), elige NO para no descuadrar la caja de hoy.</div></div>`:''}
+    <button class="add" onclick="guardarVentaManual()">Guardar venta manual · ${money(tot)}</button>
+    <button class="cls" onclick="ventaModal=null;render()">Cancelar</button>
+  </div></div>`;
+}
+async function guardarVentaManual(){
+  const v = ventaModal;
+  if(!v.items.length){ toast('Agrega al menos un ítem'); return; }
+  if(!v.fecha){ toast('Elige la fecha real de la venta'); return; }
+  const esHoy = v.fecha === hoyISO();
+  const ts = esHoy ? Date.now() : new Date(v.fecha + 'T12:00:00').getTime();
+  const id = await store.nextOrderId();
+  const total = Math.round(v.items.reduce((s,i)=>s+i.price*i.qty,0)*100)/100;
+  const o = { id, mesa: (v.mesa||'').trim() || 'Venta manual', tipo:'mesa', ts, practica:false,
+    mesero: user?user.nombre:'', manual:true, manualPor: user?user.nombre:'', manualTs: Date.now(),
+    items: v.items.map((i,k)=>({ uid:k+1, name:i.name, price:i.price, station: PROD[i.name]?PROD[i.name].station:'salados',
+      cat: PROD[i.name]?PROD[i.name].cat:'Manual', qty:i.qty, mods:{}, notas:'', estado:'entregado', tsEnt: ts,
+      manual:true, manualPor:user?user.nombre:'', manualTs: Date.now() })) };
+  if(v.metodo){
+    const pago = { monto: total, metodo: v.metodo, detalle: 'venta manual' + (esHoy?'':' del '+v.fecha) };
+    if(!esHoy && !v.enCaja) pago.noCaja = true;
+    o.pagos = [pago];
+  }
+  store.saveOrder(o); ventaModal = null;
+  toast('Venta manual #'+id+' registrada ✓'); render();
 }
 /* ---------- DIVIDIR CUENTA POR ÍTEMS ---------- */
 function splitUnits(o){
@@ -1039,15 +1201,16 @@ function entregarTodo(oid){
   store.saveOrder(o); toast('Comanda #'+oid+' cerrada'); render();
 }
 function csvDe(orders, filename){
-  let rows = [['Comanda','Tipo','Mesa/Cliente','Mesero','Modo','Fecha','Hora','Producto','Cant','Detalle','Precio','Subtotal','Estado','MinSalida','Pagos','BoletaDNI','BoletaNombre','BoletaContacto']];
+  let rows = [['Comanda','Tipo','Mesa/Cliente','Mesero','Modo','Fecha','Hora','Producto','Cant','Detalle','Precio','Subtotal','Estado','MinSalida','Pagos','BoletaDNI','BoletaNombre','BoletaContacto','RegistroManual']];
   (orders||[]).forEach(o=>{
-    const pagosTxt = pagosDe(o).map(p=>p.metodo+':'+p.monto).join(' | ');
+    const pagosTxt = pagosDe(o).map(p=>p.metodo+':'+p.monto+(p.noCaja?'(noCaja)':'')).join(' | ');
     const b = o.boleta || {};
     o.items.forEach(i=>{
       const d = new Date(o.ts);
+      const man = o.manual ? 'cuenta manual' + (o.manualPor?' ('+o.manualPor+')':'') : (i.manual ? 'item manual' + (i.manualPor?' ('+i.manualPor+')':'') : '');
       rows.push([o.id, o.tipo==='llevar'?'Llevar':'Mesa', o.mesa||'', o.mesero||'', o.practica?'practica':'real', d.toLocaleDateString(), hhmm(o.ts), i.name, i.qty,
         modsTxt(i).replace(/,/g,';'), i.price, i.price*i.qty, o.anulada?'anulado':i.estado,
-        i.tsListo?elapsedMin(o.ts,i.tsListo):'', pagosTxt, b.dni||'', (b.nombre||'').replace(/,/g,';'), b.contacto||'']);
+        i.tsListo?elapsedMin(o.ts,i.tsListo):'', pagosTxt, b.dni||'', (b.nombre||'').replace(/,/g,';'), b.contacto||'', man.replace(/,/g,';')]);
     });
   });
   const txt = rows.map(r=>r.join(',')).join('\n');
@@ -1193,7 +1356,7 @@ function addReceta(){
 function delReceta(id){ state.recetas = state.recetas.filter(x=>x.id!==id); store.saveList('recetas', state.recetas); render(); }
 
 /* ---------- NAV ---------- */
-function go(v){ view = v; modal = null; customModal = null; chkModal = null; cuentaId = null; recetaModal = null; splitModal = null; armAnular = null; armAnularItem = null; armBorrarP = false; armArchivar = false; addTargetId = null; cierreMode = false; boletaEdit = false; histDay = null; render(); }
+function go(v){ view = v; modal = null; customModal = null; chkModal = null; cuentaId = null; recetaModal = null; splitModal = null; armAnular = null; armAnularItem = null; armBorrarP = false; armArchivar = false; addTargetId = null; cierreMode = false; boletaEdit = false; histDay = null; quitarMode = false; manualAddModal = null; ventaModal = null; snapModal = null; render(); }
 window.go = go; window.goCocina = goCocina; window.setTab = setTab; window.openItem = openItem;
 window.pick = pick; window.addCart = addCart; window.rmCart = rmCart; window.sendOrder = sendOrder;
 window.setEstado = setEstado; window.openChk = openChk; window.deliver = deliver; window.csv = csv;
@@ -1202,6 +1365,8 @@ window.entregarTodo = entregarTodo; window.doSearch = doSearch;
 window.setModo = setModo; window.borrarPractica = borrarPractica; window.archivarDia = archivarDia; window.csvHistorial = csvHistorial; window.toggleHistDay = toggleHistDay;
 window.pickProd = pickProd; window.toggleDisp = toggleDisp; window.resetDisp = resetDisp;
 window.openCustom = openCustom; window.addCustom = addCustom;
+window.openManualAdd = openManualAdd; window.addManualItem = addManualItem; window.openSnap = openSnap;
+window.openVentaManual = openVentaManual; window.vmAddItem = vmAddItem; window.vmRmItem = vmRmItem; window.guardarVentaManual = guardarVentaManual;
 window.toggleEntrega = toggleEntrega; window.anularItem = anularItem; window.openChkMulti = openChkMulti;
 window.setPago = setPago; window.setGtab = setGtab;
 window.addCompra = addCompra; window.toggleCompra = toggleCompra; window.delCompra = delCompra; window.clearCompras = clearCompras;
