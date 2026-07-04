@@ -48,7 +48,7 @@ function clean(obj){ return JSON.parse(JSON.stringify(obj)); }
 
 /* ------------------------- MODO LOCAL ------------------------- */
 function LocalStore(){
-  let data = { orders:[], compras:[], tareas:clean(SEED_TAREAS), recetas:clean(SEED_RECETAS), caja:null, modo:'real', historial:[], noDisponible:[], seq:1 };
+  let data = { orders:[], compras:[], tareas:clean(SEED_TAREAS), recetas:clean(SEED_RECETAS), caja:null, modo:'real', historial:[], noDisponible:[], carta:clean(MENU_SEED), seq:1 };
   try{
     const s = localStorage.getItem('pc_demo');
     if(s){
@@ -61,6 +61,7 @@ function LocalStore(){
       data.modo    = old.modo || 'real';
       data.historial = old.historial || [];
       data.noDisponible = old.noDisponible || [];
+      data.carta   = (old.carta && old.carta.length) ? old.carta : data.carta;
       data.seq     = old.seq || (Math.max(0, ...data.orders.map(o=>o.id)) + 1);
       // completar recetas de jugos si faltan (migración)
       SEED_RECETAS.forEach(r => { if(!data.recetas.some(x => x.nombre.toLowerCase() === r.nombre.toLowerCase())) data.recetas.push(clean(r)); });
@@ -95,7 +96,7 @@ function LocalStore(){
 function FirebaseStore(cfg){
   firebase.initializeApp(cfg);
   const db = firebase.database();
-  const data = { orders:[], compras:[], tareas:[], recetas:[], caja:null, modo:'real', historial:[], noDisponible:[] };
+  const data = { orders:[], compras:[], tareas:[], recetas:[], caja:null, modo:'real', historial:[], noDisponible:[], carta:[] };
   let notify = () => {};
 
   function listen(){
@@ -104,7 +105,7 @@ function FirebaseStore(cfg){
       data.orders = Object.values(v).map(normOrder).filter(Boolean).sort((a,b)=>a.id-b.id);
       notify();
     });
-    ['compras','tareas','recetas','noDisponible'].forEach(name => {
+    ['compras','tareas','recetas','noDisponible','carta'].forEach(name => {
       db.ref(name).on('value', snap => {
         const v = snap.val();
         data[name] = Array.isArray(v) ? v.filter(Boolean) : Object.values(v || {});
@@ -121,6 +122,8 @@ function FirebaseStore(cfg){
     // sembrar tareas y recetas la primera vez
     db.ref('tareas').once('value', s => { if(!s.exists()) db.ref('tareas').set(clean(SEED_TAREAS)); });
     db.ref('recetas').once('value', s => { if(!s.exists()) db.ref('recetas').set(clean(SEED_RECETAS)); });
+    // migración: la primera vez, la carta del código se copia a la base (de ahí se edita en la app)
+    db.ref('carta').once('value', s => { if(!s.exists()) db.ref('carta').set(clean(MENU_SEED)); });
   }
 
   // autenticación anónima (las reglas de la base exigen auth != null)

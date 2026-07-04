@@ -27,7 +27,10 @@ const GRUPOS = {
   hieloC:    {label:'Hielo', opts:['Normal','Poco hielo','Sin hielo'], def:'Normal', hideDef:true},
   dulzorC:   {label:'Dulzor', opts:['Regular','Sin dulce','Más dulce'], def:'Regular', hideDef:true},
 };
-const MENU = [
+/* La carta de abajo es la SEMILLA inicial: la primera vez se copia a la base de
+   datos y desde ahí se edita en la app (Gestión → Carta). Cambios aquí solo
+   aplican si la base aún no tiene carta guardada. */
+let MENU = [
  {cat:'Triples', station:'salados', acomp:['Servilletas','Cubiertos','Salsas de mesa'], items:[
    {n:'Club sandwich', p:15, d:'Pollo, tocino, jamón, cheddar, huevo, verduras', mods:['sandOpts']},
    {n:'Triple clásico', p:10, d:'Huevo sancochado, palta, tomate', mods:['sandOpts']},
@@ -118,8 +121,26 @@ const LATE_MIN = 10; // minutos para considerar retrasado un producto rápido
 const RAPIDOS = new Set(['Waffles','Copas de helado','Milkshakes','Ensaladas de fruta','Postres de la semana',
   'Bebidas calientes','Frappes','Batidos','Jugos clásicos','Jugos combinados',
   'Cocteles clásicos','Cocteles de la casa','Cervezas y otras']);
-// index rápido
-const PROD = {}; MENU.forEach(c=>c.items.forEach(it=>{ it.cat=c.cat; it.station=c.station; it.acomp=c.acomp; it.rapido=RAPIDOS.has(c.cat); PROD[it.n]=it; }));
+// semilla limpia (copiada ANTES de indexar, para migrar a la base la primera vez)
+const MENU_SEED = JSON.parse(JSON.stringify(MENU));
+// index rápido (se reconstruye cada vez que la carta cambia)
+let PROD = {};
+function buildProdIndex(){
+  PROD = {};
+  MENU.forEach(c=>{
+    c.items = Array.isArray(c.items) ? c.items.filter(Boolean) : Object.values(c.items || {});
+    c.items.forEach(it=>{ it.cat=c.cat; it.station=c.station; it.acomp=c.acomp; it.rapido=RAPIDOS.has(c.cat); PROD[it.n]=it; });
+  });
+}
+buildProdIndex();
+/* reemplaza la carta activa por la guardada en la base (sincronizada) */
+function setCarta(carta){
+  if(!carta) return;
+  const arr = Array.isArray(carta) ? carta.filter(Boolean) : Object.values(carta);
+  if(!arr.length) return;
+  MENU = arr;
+  buildProdIndex();
+}
 function isLate(o, it){
   return (it.estado==='pendiente' || it.estado==='preparando')
     && PROD[it.name] && PROD[it.name].rapido

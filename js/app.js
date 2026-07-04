@@ -7,7 +7,7 @@
 /* menú y modificadores: ver js/menu.js */
 
 /* ================= ESTADO (gestionado por js/sync.js) ================= */
-let state = { orders:[], compras:[], tareas:[], recetas:[], caja:null, modo:'real', historial:[], noDisponible:[] };
+let state = { orders:[], compras:[], tareas:[], recetas:[], caja:null, modo:'real', historial:[], noDisponible:[], carta:[] };
 let user = null;
 try{ const u = localStorage.getItem('pc_user'); if(u) user = JSON.parse(u); }catch(e){}
 
@@ -88,6 +88,7 @@ function render(){
   if(manualAddModal) h += rManualAdd();
   if(ventaModal) h += rVentaManual();
   if(snapModal) h += rSnap();
+  if(cartaModal) h += rCartaModal();
   app.innerHTML = h;
 }
 
@@ -202,9 +203,11 @@ function rMesero(){
   }
   const enAgregar = addTargetId !== null;
   const oAdd = enAgregar ? state.orders.find(x=>x.id===addTargetId) : null;
-  const cats = MENU.map(c=>`<button class="${tab===c.cat?'act':''}" onclick="setTab('${esc(c.cat)}')">${esc(c.cat)}</button>`).join('');
-  const cat = MENU.find(c=>c.cat===tab);
-  const prods = cat.items.map((it,i)=>{
+  const visibles = MENU.filter(c=>c.items.some(i=>!i.off));
+  const cats = visibles.map(c=>`<button class="${tab===c.cat?'act':''}" onclick="setTab('${esc(c.cat)}')">${esc(c.cat)}</button>`).join('');
+  let cat = MENU.find(c=>c.cat===tab);
+  if(!cat || !cat.items.some(i=>!i.off)){ cat = visibles[0] || MENU[0]; tab = cat.cat; }
+  const prods = cat.items.filter(it=>!it.off).map((it,i)=>{
     const off = noHay(it.n);
     return `<div class="prod${off?' agotado':''}" onclick="pickProd('${esc(it.n)}')">
       <div><div class="nm">${esc(it.n)}${off?' <span class="agottag">AGOTADO</span>':''}</div>${it.d?`<div class="ds">${esc(it.d)}</div>`:''}</div>
@@ -380,6 +383,7 @@ function rResults(){
   const toks = norm(query).split(/\s+/).filter(Boolean);
   const scored = [];
   MENU.forEach(c => c.items.forEach(it => {
+    if(it.off) return;                         // retirados de la carta no aparecen
     const nm = norm(it.n), cat = norm(c.cat), ds = norm(it.d || '');
     let score = 0;
     for(const t of toks){
@@ -1227,16 +1231,112 @@ function rGestion(){
   const nOff = (state.noDisponible||[]).length;
   const tabs = `<div class="tabs">
     <button class="${gtab==='disp'?'act':''}" onclick="setGtab('disp')">🍽 Disponibilidad${nOff?` (${nOff})`:''}</button>
+    ${esAdmin()?`<button class="${gtab==='carta'?'act':''}" onclick="setGtab('carta')">🍔 Carta</button>`:''}
     <button class="${gtab==='compras'?'act':''}" onclick="setGtab('compras')">🛒 Lista de compras</button>
     <button class="${gtab==='tareas'?'act':''}" onclick="setGtab('tareas')">🔑 Apertura y cierre</button>
     <button class="${gtab==='recetas'?'act':''}" onclick="setGtab('recetas')">📖 Recetas</button>
   </div>`;
   let body = '';
   if(gtab==='disp') body = rDisponibilidad();
+  else if(gtab==='carta' && esAdmin()) body = rCartaEditor();
   else if(gtab==='compras') body = rCompras();
   else if(gtab==='tareas') body = rTareas();
   else body = rRecetas();
   return rHeader('Gestión del Café','GESTIÓN') + `<main>${tabs}${body}</main>`;
+}
+
+/* ---------- EDITOR DE CARTA (solo admin, sincronizado) ---------- */
+let cartaModal = null;   // {mode:'add'|'edit', cat, idx?, n, d, p}
+let armRetirar = null;   // 'cat|idx' armado para retirar (doble toque)
+function saveCarta(){ store.saveList('carta', MENU); setCarta(state.carta); }
+function rCartaEditor(){
+  const bloques = MENU.map(c=>{
+    const rows = c.items.map((it,idx)=>{
+      const key = c.cat + '|' + idx;
+      if(it.off){
+        return `<div class="dispitem off">
+          <span class="dispnm"><b>${esc(it.n)}</b> <span class="det">${money(it.p)} · <span style="color:var(--gris);font-weight:800">RETIRADO</span></span></span>
+          <button class="stbtn st-listo" style="padding:8px 12px;margin:0;white-space:nowrap" onclick="restaurarProd('${esc(c.cat)}',${idx})">↩ Restaurar</button>
+        </div>`;
+      }
+      const arm = armRetirar === key;
+      return `<div class="dispitem">
+        <span class="dispnm"><b>${esc(it.n)}</b> <span class="det">${money(it.p)}${it.d?' · '+esc(it.d):''}</span></span>
+        <button class="stbtn st-preparando" style="padding:8px 10px;margin:0" onclick="editProd('${esc(c.cat)}',${idx})">✎</button>
+        <button class="anularbtn mini ${arm?'armado':''}" style="margin:0;white-space:nowrap" onclick="retirarProd('${esc(c.cat)}',${idx})">${arm?'¿Seguro?':'Retirar'}</button>
+      </div>`;
+    }).join('');
+    return `<div class="h2s" style="display:flex;align-items:center;gap:8px">${esc(c.cat)}
+      <button class="pchip" onclick="addProd('${esc(c.cat)}')">+ Añadir producto</button></div>${rows || '<div class="det" style="padding:6px 0">Sin productos.</div>'}`;
+  }).join('');
+  return `
+    <p style="font-size:13px;color:var(--cafemed)">Edita la carta: los cambios llegan al instante a todos los equipos. "Retirar" solo la oculta (se puede restaurar); las ventas pasadas no se alteran.</p>
+    ${bloques}`;
+}
+function addProd(cat){ cartaModal = { mode:'add', cat, n:'', d:'', p:'' }; render(); }
+function editProd(cat, idx){
+  const c = MENU.find(x=>x.cat===cat); if(!c || !c.items[idx]) return;
+  const it = c.items[idx];
+  cartaModal = { mode:'edit', cat, idx, n: it.n, d: it.d||'', p: it.p }; render();
+}
+function retirarProd(cat, idx){
+  const key = cat + '|' + idx;
+  if(armRetirar !== key){ armRetirar = key; render(); setTimeout(()=>{ if(armRetirar===key){ armRetirar=null; render(); } }, 3500); return; }
+  const c = MENU.find(x=>x.cat===cat); if(!c || !c.items[idx]) return;
+  const it = c.items[idx];
+  it.off = true;
+  state.noDisponible = (state.noDisponible||[]).filter(n=>n!==it.n);   // limpiar agotados
+  store.saveList('noDisponible', state.noDisponible);
+  armRetirar = null; saveCarta();
+  toast('“'+it.n+'” retirado de la carta (se puede restaurar)'); render();
+}
+function restaurarProd(cat, idx){
+  const c = MENU.find(x=>x.cat===cat); if(!c || !c.items[idx]) return;
+  delete c.items[idx].off; saveCarta();
+  toast('“'+c.items[idx].n+'” de vuelta en la carta ✓'); render();
+}
+function rCartaModal(){
+  const m = cartaModal;
+  return `<div class="ovl" onclick="if(event.target===this){cartaModal=null;render()}"><div class="modal">
+    <h3>${m.mode==='add'?'＋ Añadir producto':'✎ Editar producto'}</h3>
+    <div class="mp" style="font-size:12px;color:var(--gris);font-weight:400">Categoría: <b>${esc(m.cat)}</b>${m.mode==='add'?' · heredará los modificadores de su categoría':''}</div>
+    <div class="grp"><div class="gl">Nombre</div>
+      <input id="cpNombre" placeholder="Ej. Jugo de lúcuma" value="${esc(m.n)}" oninput="cartaModal.n=this.value"></div>
+    <div class="grp"><div class="gl">Precio (S/)</div>
+      <input type="number" inputmode="decimal" placeholder="Ej. 6" value="${m.p}" oninput="cartaModal.p=this.value"></div>
+    <div class="grp"><div class="gl">Descripción (opcional)</div>
+      <input placeholder="Ej. Con leche o agua" value="${esc(m.d)}" oninput="cartaModal.d=this.value"></div>
+    <button class="add" onclick="guardarProd()">${m.mode==='add'?'Añadir a la carta':'Guardar cambios'}</button>
+    <button class="cls" onclick="cartaModal=null;render()">Cancelar</button>
+  </div></div>`;
+}
+function guardarProd(){
+  const m = cartaModal;
+  const n = (m.n||'').trim(), p = parseFloat(m.p), d = (m.d||'').trim();
+  if(!n){ toast('Escribe el nombre del producto'); return; }
+  if(isNaN(p) || p <= 0){ toast('Ingresa un precio válido'); return; }
+  const c = MENU.find(x=>x.cat===m.cat); if(!c){ cartaModal=null; render(); return; }
+  const repetido = MENU.some(cc=>cc.items.some((it,k)=> it.n.toLowerCase()===n.toLowerCase() && !(m.mode==='edit' && cc.cat===m.cat && k===m.idx)));
+  if(repetido){ toast('Ya existe un producto con ese nombre'); return; }
+  if(m.mode === 'add'){
+    const hermano = c.items.find(i=>!i.off && i.mods && i.mods.length);
+    const nuevo = { n, p: Math.round(p*100)/100 };
+    if(d) nuevo.d = d;
+    if(hermano) nuevo.mods = hermano.mods.slice();   // hereda modificadores de la categoría
+    c.items.push(nuevo);
+    toast('“'+n+'” añadido a '+m.cat+' ✓');
+  } else {
+    const it = c.items[m.idx]; if(!it){ cartaModal=null; render(); return; }
+    const nombreViejo = it.n;
+    it.n = n; it.p = Math.round(p*100)/100;
+    if(d) it.d = d; else delete it.d;
+    if(nombreViejo !== n && (state.noDisponible||[]).includes(nombreViejo)){
+      state.noDisponible = state.noDisponible.map(x=>x===nombreViejo?n:x);
+      store.saveList('noDisponible', state.noDisponible);
+    }
+    toast('Producto actualizado ✓');
+  }
+  cartaModal = null; saveCarta(); render();
 }
 
 /* ---------- DISPONIBILIDAD DE LA CARTA ---------- */
@@ -1252,7 +1352,7 @@ function resetDisp(){ store.saveList('noDisponible', []); toast('Todos los produ
 function rDisponibilidad(){
   const nOff = (state.noDisponible||[]).length;
   const bloques = MENU.map(c=>{
-    const rows = c.items.map(it=>{
+    const rows = c.items.filter(it=>!it.off).map(it=>{
       const off = noHay(it.n);
       return `<div class="dispitem${off?' off':''}">
         <span class="dispnm"><b>${esc(it.n)}</b> <span class="det">${money(it.p)}${off?' · <span class="agot">AGOTADO HOY</span>':''}</span></span>
@@ -1356,7 +1456,7 @@ function addReceta(){
 function delReceta(id){ state.recetas = state.recetas.filter(x=>x.id!==id); store.saveList('recetas', state.recetas); render(); }
 
 /* ---------- NAV ---------- */
-function go(v){ view = v; modal = null; customModal = null; chkModal = null; cuentaId = null; recetaModal = null; splitModal = null; armAnular = null; armAnularItem = null; armBorrarP = false; armArchivar = false; addTargetId = null; cierreMode = false; boletaEdit = false; histDay = null; quitarMode = false; manualAddModal = null; ventaModal = null; snapModal = null; render(); }
+function go(v){ view = v; modal = null; customModal = null; chkModal = null; cuentaId = null; recetaModal = null; splitModal = null; armAnular = null; armAnularItem = null; armBorrarP = false; armArchivar = false; addTargetId = null; cierreMode = false; boletaEdit = false; histDay = null; quitarMode = false; manualAddModal = null; ventaModal = null; snapModal = null; cartaModal = null; armRetirar = null; render(); }
 window.go = go; window.goCocina = goCocina; window.setTab = setTab; window.openItem = openItem;
 window.pick = pick; window.addCart = addCart; window.rmCart = rmCart; window.sendOrder = sendOrder;
 window.setEstado = setEstado; window.openChk = openChk; window.deliver = deliver; window.csv = csv;
@@ -1366,6 +1466,7 @@ window.setModo = setModo; window.borrarPractica = borrarPractica; window.archiva
 window.pickProd = pickProd; window.toggleDisp = toggleDisp; window.resetDisp = resetDisp;
 window.openCustom = openCustom; window.addCustom = addCustom;
 window.openManualAdd = openManualAdd; window.addManualItem = addManualItem; window.openSnap = openSnap;
+window.addProd = addProd; window.editProd = editProd; window.retirarProd = retirarProd; window.restaurarProd = restaurarProd; window.guardarProd = guardarProd;
 window.openVentaManual = openVentaManual; window.vmAddItem = vmAddItem; window.vmRmItem = vmRmItem; window.guardarVentaManual = guardarVentaManual;
 window.toggleEntrega = toggleEntrega; window.anularItem = anularItem; window.openChkMulti = openChkMulti;
 window.setPago = setPago; window.setGtab = setGtab;
@@ -1392,5 +1493,5 @@ setInterval(()=>{
 }, 1000);
 
 // arranque: el store notifica cada cambio de datos (local o Firebase)
-store.init(s => { state = s; render(); });
+store.init(s => { state = s; setCarta(s.carta); render(); });
 render();
