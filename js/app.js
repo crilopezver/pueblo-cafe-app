@@ -89,6 +89,9 @@ function render(){
   if(ventaModal) h += rVentaManual();
   if(snapModal) h += rSnap();
   if(cartaModal) h += rCartaModal();
+  if(mesaModal) h += rMesaModal();
+  if(unirModal) h += rUnir();
+  if(descModal) h += rDesc();
   app.innerHTML = h;
 }
 
@@ -117,11 +120,21 @@ function pagosDe(o){
   return [];
 }
 function pagadoDe(o){ return pagosDe(o).reduce((s,p)=>s+(p.monto||0),0); }
-function pendienteDe(o){ return Math.max(0, orderTotal(o) - pagadoDe(o)); }
+/* cuenta oculta: vaciada por una unión o eliminada como duplicada (queda en la base como rastro) */
+function esFantasma(o){ return (!!o.unidaEn && (!o.items || !o.items.length)) || !!o.eliminada; }
+/* descuento aplicado a la cuenta (porcentaje o monto fijo) */
+function descMonto(o){
+  if(!o.descuento) return 0;
+  const bruto = orderTotal(o), d = o.descuento;
+  const m = d.tipo === 'pct' ? bruto * (parseFloat(d.valor)||0) / 100 : (parseFloat(d.valor)||0);
+  return Math.min(Math.round(m*100)/100, bruto);
+}
+function netDe(o){ return Math.max(0, Math.round((orderTotal(o) - descMonto(o))*100)/100); }
+function pendienteDe(o){ return Math.max(0, netDe(o) - pagadoDe(o)); }
 function estaPagado(o){ return orderTotal(o) > 0 && pendienteDe(o) < 0.005; }
 function ventasMetodo(metodo){
   // excluye prácticas y pagos marcados noCaja (ventas de días anteriores cuyo dinero no está en la caja de hoy)
-  return state.orders.filter(o=>!o.anulada && !o.practica).reduce((s,o)=>
+  return state.orders.filter(o=>!o.anulada && !o.practica && !esFantasma(o)).reduce((s,o)=>
     s + pagosDe(o).filter(p=>p.metodo===metodo && !p.noCaja).reduce((a,p)=>a+(p.monto||0),0), 0);
 }
 
@@ -353,14 +366,41 @@ function practTag(o){ return o.practica ? `<span class="practag">🧪 PRÁCTICA<
 function setTipo(t){ tipo = t; mesa = ''; render(); }
 /* ---------- SELECCIÓN DE MESA ---------- */
 function ordersDeMesa(nombre){
-  return state.orders.filter(o=>!o.anulada && o.tipo==='mesa' && o.mesa===nombre);
+  return state.orders.filter(o=>!o.anulada && !esFantasma(o) && o.tipo==='mesa' && o.mesa===nombre);
 }
 function mesaOcupada(nombre){
   // ocupada = tiene un pedido sin saldar o con ítems aún no entregados
   return ordersDeMesa(nombre).some(o=>
     pendienteDe(o) > 0.005 || o.items.some(i=>i.estado!=='entregado' && i.estado!=='anulado'));
 }
-function pickMesa(m){ mesa = m; render(); }
+let mesaModal = null;   // aviso de mesa ocupada {mesa}
+function pickMesa(m){
+  // si la mesa tiene cuentas abiertas, preguntar antes de crear otra comanda
+  const abiertas = cuentasAbiertasDe(m);
+  if(abiertas.length){ mesaModal = { mesa: m }; render(); return; }
+  mesa = m; render();
+}
+function cuentasAbiertasDe(nombre){
+  return ordersDeMesa(nombre).filter(o=>
+    pendienteDe(o) > 0.005 || o.items.some(i=>i.estado!=='entregado' && i.estado!=='anulado'));
+}
+function mesaNueva(m){ mesaModal = null; mesa = m; render(); }
+function rMesaModal(){
+  const m = mesaModal.mesa;
+  const abiertas = cuentasAbiertasDe(m);
+  if(!abiertas.length){ mesaModal = null; return ''; }
+  const rows = abiertas.map(o=>`
+    <button class="stbtn st-preparando" style="width:100%;margin:4px 0;text-align:left" onclick="mesaModal=null;startAgregar(${o.id})">
+      ➕ Agregar a la cuenta #${o.id} · ${money(orderTotal(o))} · hace ${elapsedMin(o.ts, Date.now())} min
+    </button>`).join('');
+  return `<div class="ovl" onclick="if(event.target===this){mesaModal=null;render()}"><div class="modal">
+    <h3>⚠ ${esc(m)} tiene cuenta abierta</h3>
+    <div class="mp" style="font-size:12.5px;color:var(--cafemed);font-weight:400">Para no partir la cuenta en varias comandas, lo normal es <b>agregar</b> a la que ya existe. Crea una nueva solo si es otro grupo distinto en la misma mesa.</div>
+    ${rows}
+    <button class="splitbtn" style="background:var(--cafemed)" onclick="mesaNueva('${esc(m)}')">🆕 Crear cuenta NUEVA (otro grupo)</button>
+    <button class="cls" onclick="mesaModal=null;render()">Cancelar</button>
+  </div></div>`;
+}
 function rMesaSelector(){
   const btns = mesasList.map(m=>{
     const occ = mesaOcupada(m), sel = mesa===m;
@@ -548,7 +588,7 @@ async function sendOrder(){
   }
 }
 function pendingOrders(){
-  return state.orders.filter(o=>!o.anulada && o.items.some(it=>it.estado!=='entregado')).slice().reverse();
+  return state.orders.filter(o=>!o.anulada && !esFantasma(o) && o.items.some(it=>it.estado!=='entregado')).slice().reverse();
 }
 
 /* ---------- COCINA ---------- */
@@ -556,7 +596,7 @@ function goCocina(st){ station = st; view = 'cocina'; render(); }
 function rCocina(){
   const name = station==='dulces' ? 'Cocina Dulces · Jugos · Barra' : 'Cocina Salados';
   const activo = it => it.estado!=='entregado' && it.estado!=='anulado';
-  const ords = state.orders.filter(o=>!o.anulada && o.items.some(it=>it.station===station && activo(it)));
+  const ords = state.orders.filter(o=>!o.anulada && !esFantasma(o) && o.items.some(it=>it.station===station && activo(it)));
   // sugerencia de lotes: agrupar ítems pendientes/preparando del mismo producto
   const act = [];
   ords.forEach(o=>o.items.forEach(it=>{ if(it.station===station && (it.estado==='pendiente'||it.estado==='preparando')) act.push({o,it}); }));
@@ -759,14 +799,14 @@ function deliver(){
 
 /* ---------- REGISTRO / CAJA ---------- */
 function rRegistro(){
-  const os = state.orders.slice().reverse();
-  const validas = state.orders.filter(o=>!o.anulada && !o.practica);   // ventas reales
-  const nPract = state.orders.filter(o=>o.practica && !o.anulada).length;
-  const tot = validas.reduce((s,o)=>s+orderTotal(o),0);
+  const os = state.orders.filter(o=>!esFantasma(o)).slice().reverse();
+  const validas = state.orders.filter(o=>!o.anulada && !o.practica && !esFantasma(o));   // ventas reales
+  const nPract = state.orders.filter(o=>o.practica && !o.anulada && !esFantasma(o)).length;
+  const tot = validas.reduce((s,o)=>s+netDe(o),0);
   const totEf = ventasMetodo('efectivo'), totYa = ventasMetodo('yape');
   const sinPago = tot - totEf - totYa;
   const cards = os.map(o=>{
-    const t = orderTotal(o);
+    const t = netDe(o);
     const done = o.items.every(i=>i.estado==='entregado' || i.estado==='anulado');
     const badge = o.anulada ? '<span class="badge b-anulado" style="float:right">ANULADA</span>'
       : `<span class="badge ${done?'b-entregado':'b-pendiente'}" style="float:right">${done?'ENTREGADA':'ACTIVA'}</span>`;
@@ -782,7 +822,8 @@ function rRegistro(){
     }
     const sal = salioEn(o);
     const anulados = o.items.filter(i=>i.estado==='anulado').length;
-    const manTag = o.manual ? '<span class="badge b-manualtag">✏️ MANUAL</span>' : (o.editado ? '<span class="badge b-manualtag">✏️ EDITADA</span>' : '');
+    const manTag = (o.manual ? '<span class="badge b-manualtag">✏️ MANUAL</span>' : (o.editado ? '<span class="badge b-manualtag">✏️ EDITADA</span>' : ''))
+      + (o.descuento ? ' <span class="badge" style="background:#B5722A">🏷 DESC −'+money(descMonto(o))+'</span>' : '');
     return `<div class="regcard${o.practica?' practcard':''}"><b>#${o.id}</b> · ${tipoTxt(o)} ${practTag(o)}${manTag}${o.mesero?' · '+esc(o.mesero):''} · ${new Date(o.ts).toLocaleDateString()} ${hhmm(o.ts)}
       ${badge}${pagoBadge}<br>
       <span style="color:var(--cafemed)">${o.items.map(i=>(i.estado==='anulado'?'<s>':'')+i.qty+'× '+esc(i.name)+(i.estado==='anulado'?'</s>':'')).join(', ')}</span>
@@ -834,7 +875,7 @@ function csvHistorial(){ csvDe(state.historial || [], 'historial_pueblo_cafe.csv
 /* ---------- HISTORIAL DE DÍAS (solo lectura) ---------- */
 function toggleHistDay(k){ histDay = (histDay===k) ? null : k; render(); }
 function rHistorial(){
-  const hist = (state.historial || []).filter(o=>!o.practica);
+  const hist = (state.historial || []).filter(o=>!o.practica && !esFantasma(o));
   if(!hist.length){
     return rHeader('Historial de días','HISTORIAL') + `<main>
       <div class="empty">Aún no hay días archivados.<br>Cuando uses <b>“Cerrar y archivar el día”</b> en Caja, el día quedará guardado aquí para consultarlo.</div>
@@ -847,14 +888,14 @@ function rHistorial(){
     const os = byDay[k];
     const validas = os.filter(o=>!o.anulada);
     const anul = os.length - validas.length;
-    const tot = validas.reduce((s,o)=>s+orderTotal(o),0);
+    const tot = validas.reduce((s,o)=>s+netDe(o),0);
     let ef=0, ya=0;
     validas.forEach(o=> pagosDe(o).forEach(p=>{ if(p.metodo==='efectivo') ef+=p.monto||0; else if(p.metodo==='yape') ya+=p.monto||0; }));
     const sinCobrar = tot - ef - ya;
     const fechaTxt = new Date(os[0].ts).toLocaleDateString();
     const abierto = histDay===k;
     const detalle = abierto ? os.slice().reverse().map(o=>{
-      const t = orderTotal(o);
+      const t = netDe(o);
       const badge = o.anulada ? '<span class="badge b-anulado" style="float:right">ANULADA</span>' : '';
       return `<div class="regcard" style="margin:8px 0">
         <b>#${o.id}</b> · ${tipoTxt(o)}${o.mesero?' · '+esc(o.mesero):''} · ${hhmm(o.ts)} ${badge}<br>
@@ -929,13 +970,18 @@ function rCuenta(){
       <hr>
       ${lines}
       <hr>
-      <div class="tline" style="font-weight:800;font-size:15px"><span>TOTAL</span><span>${money(t)}</span></div>
+      ${descMonto(o)>0.005?`<div class="tline"><span>Subtotal</span><span>${money(t)}</span></div>
+      <div class="tline"><span>Descuento${o.descuento.tipo==='pct'?' ('+o.descuento.valor+'%)':''}</span><span>−${money(descMonto(o))}</span></div>`:''}
+      <div class="tline" style="font-weight:800;font-size:15px"><span>TOTAL</span><span>${money(netDe(o))}</span></div>
       ${pagosLineas ? '<hr>' + pagosLineas + (pend>0.005?`<div class="tline"><span>Pendiente</span><span>${money(pend)}</span></div>`:'') : ''}
       ${boletaTicket}
       <div style="text-align:center;font-size:11px;margin-top:6px">¡Gracias por su visita!</div>
     </div>
     ${o.manual?`<div class="manualbadge">✏️ Cuenta AGREGADA MANUALMENTE${o.manualPor?' por '+esc(o.manualPor):''}${o.manualTs?' · '+new Date(o.manualTs).toLocaleDateString()+' '+hhmm(o.manualTs):''}</div>`:''}
     ${o.editado?`<div class="manualbadge">✏️ MODIFICADA MANUALMENTE · <button class="linklike" onclick="openSnap(${o.id})">ver anterior</button></div>`:''}
+    ${(o.unidaDe && o.unidaDe.length)?`<div class="manualbadge" style="border-color:#5E3A82;background:#F3EDFA;color:#4A2B68">🔗 Incluye la(s) cuenta(s) ${o.unidaDe.map(u=>'#'+u.id).join(', ')} unida(s) aquí</div>`:''}
+    ${o.descuento?`<div class="manualbadge" style="border-color:#B5722A;background:#FBF3E7;color:#7A4A12">🏷 Descuento ${o.descuento.tipo==='pct'?o.descuento.valor+'%':money(parseFloat(o.descuento.valor))} (−${money(descMonto(o))})${o.descuento.por?' · '+esc(o.descuento.por):''}
+      ${pgs.length===0?` · <button class="linklike" onclick="quitarDescuento(${o.id})">quitar</button>`:''}</div>`:''}
     ${rQuitarSec(o)}
     ${pend>0.005 ? `
       <div class="gl" style="margin-top:12px;font-size:12px;font-weight:700;color:var(--cafemed)">COBRAR ${money(pend)}</div>
@@ -943,9 +989,12 @@ function rCuenta(){
         <button onclick="setPago(${o.id},'efectivo')">💵 Efectivo</button>
         <button onclick="setPago(${o.id},'yape')">📱 Yape</button>
       </div>
-      <button class="splitbtn" onclick="openSplit(${o.id})">➗ Dividir cuenta por ítems</button>`
+      ${!o.descuento?`<button class="splitbtn" onclick="openSplit(${o.id})">➗ Dividir cuenta por ítems</button>`:''}
+      ${pgs.length===0 && !o.descuento?`<button class="splitbtn" style="background:#B5722A" onclick="openDesc(${o.id})">🏷 Aplicar descuento</button>`:''}
+      ${pgs.length===0?`<button class="splitbtn" style="background:#5E3A82" onclick="openUnir(${o.id})">🔗 Unir con otra cuenta</button>`:''}`
     : `<div style="text-align:center;color:var(--verde);font-weight:800;margin:12px 0">✓ Cuenta saldada</div>`}
     ${esAdmin() && !o.anulada ? `<button class="splitbtn" style="background:#0E7C7B" onclick="openManualAdd(${o.id})">✏️ Agregar ítem servido (manual, sin cocina)</button>`:''}
+    ${esAdmin() && pgs.length===0 ? `<button class="anularbtn ${armEliminar===o.id?'armado':''}" onclick="eliminarCuenta(${o.id})">${armEliminar===o.id?'¿Seguro? Se ocultará de todas las listas (queda rastro)':'🗑 Eliminar cuenta (duplicada / errónea)'}</button>`:''}
     ${boletaSection}
     <button class="add" onclick="window.print()">🖨 Imprimir / guardar PDF</button>
     ${pendientesEntrega?`<button class="splitbtn" style="background:var(--cafemed)" onclick="entregarTodo(${o.id})">Marcar todo entregado</button>`:''}
@@ -1046,6 +1095,115 @@ function rSnap(){
   </div></div>`;
 }
 
+/* ---------- ELIMINAR CUENTA (duplicada/errónea: se oculta con rastro) ---------- */
+let armEliminar = null;
+function eliminarCuenta(oid){
+  if(!esAdmin()){ toast('Solo el administrador puede eliminar cuentas'); return; }
+  const o = state.orders.find(x=>x.id===oid); if(!o) return;
+  if(pagosDe(o).length){ toast('La cuenta tiene cobros: no se puede eliminar'); return; }
+  if(armEliminar !== oid){ armEliminar = oid; render(); setTimeout(()=>{ if(armEliminar===oid){ armEliminar=null; render(); } }, 4000); return; }
+  o.eliminada = { ts: Date.now(), por: user?user.nombre:'', motivo: 'duplicada/errónea' };
+  armEliminar = null; store.saveOrder(o); cuentaId = null;
+  toast('Cuenta #'+oid+' eliminada de las listas (queda registrada en la base)'); render();
+}
+
+/* ---------- DESCUENTO AL COBRAR (% o monto, firmado) ---------- */
+let descModal = null;   // {oid, tipo:'pct'|'monto', valor}
+function openDesc(oid){
+  const o = state.orders.find(x=>x.id===oid); if(!o) return;
+  if(pagosDe(o).length){ toast('La cuenta ya tiene cobros: no se puede descontar'); return; }
+  descModal = { oid, tipo:'pct', valor:'' }; render();
+}
+function rDesc(){
+  const o = state.orders.find(x=>x.id===descModal.oid);
+  if(!o){ descModal = null; return ''; }
+  const bruto = orderTotal(o);
+  return `<div class="ovl" onclick="if(event.target===this){descModal=null;render()}"><div class="modal">
+    <h3>🏷 Aplicar descuento · #${o.id}</h3>
+    <div class="mp" style="font-size:12px;color:var(--gris);font-weight:400">Total actual: <b>${money(bruto)}</b>. El descuento queda registrado con tu nombre.</div>
+    <div class="grp"><div class="gl">Tipo</div><div class="opts">
+      <button class="${descModal.tipo==='pct'?'sel':''}" onclick="descModal.tipo='pct';render()">% Porcentaje</button>
+      <button class="${descModal.tipo==='monto'?'sel':''}" onclick="descModal.tipo='monto';render()">S/ Monto fijo</button></div></div>
+    <div class="grp"><div class="gl">${descModal.tipo==='pct'?'Porcentaje (1 a 100)':'Monto (S/)'}</div>
+      <input id="descValor" type="number" inputmode="decimal" placeholder="${descModal.tipo==='pct'?'Ej. 10':'Ej. 5'}" value="${descModal.valor}" oninput="descModal.valor=this.value;descPreview()"></div>
+    <div class="splitfoot" id="descPrev">${descPrevTxt()}</div>
+    <button class="add" onclick="aplicarDescuento()">Aplicar descuento</button>
+    <button class="cls" onclick="descModal=null;render()">Cancelar</button>
+  </div></div>`;
+}
+function descPrevTxt(){
+  const o = state.orders.find(x=>x.id===descModal.oid); if(!o) return '';
+  const bruto = orderTotal(o), v = parseFloat(descModal.valor);
+  if(isNaN(v) || v <= 0) return 'Escribe el descuento para ver el nuevo total';
+  const prev = Math.min(descModal.tipo==='pct' ? bruto*v/100 : v, bruto);
+  return `Descuento: −${money(Math.round(prev*100)/100)} · Nuevo total: <b>${money(Math.max(0, Math.round((bruto-prev)*100)/100))}</b>`;
+}
+function descPreview(){ const el = document.getElementById('descPrev'); if(el) el.innerHTML = descPrevTxt(); }
+function aplicarDescuento(){
+  const o = state.orders.find(x=>x.id===descModal.oid); if(!o) return;
+  const v = parseFloat(descModal.valor);
+  if(isNaN(v) || v <= 0){ toast('Ingresa un valor válido'); return; }
+  if(descModal.tipo==='pct' && v > 100){ toast('El porcentaje máximo es 100'); return; }
+  if(descModal.tipo==='monto' && v > orderTotal(o)){ toast('El monto no puede superar el total'); return; }
+  o.descuento = { tipo: descModal.tipo, valor: v, por: user?user.nombre:'', ts: Date.now() };
+  store.saveOrder(o); descModal = null;
+  toast('Descuento aplicado: −' + money(descMonto(o)) + ' ✓'); render();
+}
+function quitarDescuento(oid){
+  const o = state.orders.find(x=>x.id===oid); if(!o) return;
+  if(pagosDe(o).length){ toast('Ya hay cobros con este descuento'); return; }
+  delete o.descuento; store.saveOrder(o); toast('Descuento quitado'); render();
+}
+
+/* ---------- UNIR CUENTAS (lo inverso de dividir) ---------- */
+let unirModal = null;   // {oid, sel}
+function openUnir(oid){
+  const o = state.orders.find(x=>x.id===oid); if(!o) return;
+  if(pagosDe(o).length){ toast('Esta cuenta ya tiene cobros: no se puede unir'); return; }
+  if(o.descuento){ toast('Quita el descuento antes de unir cuentas'); return; }
+  unirModal = { oid, sel: null }; render();
+}
+function unirCandidatas(o){
+  return state.orders.filter(x=>
+    !x.anulada && !esFantasma(x) && x.id !== o.id && !!x.practica === !!o.practica &&
+    pagosDe(x).length === 0 && !x.descuento && x.items.some(i=>i.estado!=='anulado'));
+}
+function rUnir(){
+  const o = state.orders.find(x=>x.id===unirModal.oid);
+  if(!o){ unirModal = null; return ''; }
+  const cands = unirCandidatas(o);
+  const rows = cands.map(c=>`
+    <label class="uline" style="cursor:pointer">
+      <span><input type="radio" name="unirsel" ${unirModal.sel===c.id?'checked':''} onclick="unirModal.sel=${c.id};render()">
+        <b>#${c.id}</b> · ${tipoTxt(c)} · ${money(orderTotal(c))} · ${hhmm(c.ts)}</span>
+      <span class="det">${c.items.filter(i=>i.estado!=='anulado').map(i=>i.qty+'× '+esc(i.name)).join(', ')}</span>
+    </label>`).join('');
+  return `<div class="ovl" onclick="if(event.target===this){unirModal=null;render()}"><div class="modal">
+    <h3>🔗 Unir cuentas · #${o.id} (${tipoTxt(o)})</h3>
+    <div class="mp" style="font-size:12px;color:var(--gris);font-weight:400">Los ítems de la cuenta que elijas se pasan a ESTA cuenta (#${o.id}) y quedará una sola por pagar. Solo se pueden unir cuentas sin cobros. La unión queda registrada.</div>
+    ${rows || '<div class="empty" style="padding:14px">No hay otras cuentas sin cobrar para unir.</div>'}
+    ${cands.length?`<button class="add" onclick="unirCuentas()">Unir a la cuenta #${o.id}</button>`:''}
+    <button class="cls" onclick="unirModal=null;render()">Cancelar</button>
+  </div></div>`;
+}
+function unirCuentas(){
+  const o = state.orders.find(x=>x.id===unirModal.oid);
+  const src = state.orders.find(x=>x.id===unirModal.sel);
+  if(!o || !src){ toast('Elige la cuenta a unir'); return; }
+  if(pagosDe(o).length || pagosDe(src).length){ toast('Una de las cuentas ya tiene cobros'); return; }
+  // pasar ítems renumerando uids para no chocar
+  let base = o.items.reduce((m,i)=>Math.max(m,i.uid),0);
+  src.items.forEach(it=>{ it.uid = ++base; o.items.push(it); });
+  // rastro de auditoría en la cuenta destino
+  o.unidaDe = (o.unidaDe||[]).concat([{ id: src.id, mesa: src.mesa||'', ts: Date.now(), por: user?user.nombre:'' }]);
+  if(src.boleta && !o.boleta) o.boleta = src.boleta;           // conservar datos de boleta si solo la otra los tenía
+  // la cuenta origen queda vacía y marcada (normOrder la oculta de las listas; queda en la base como rastro)
+  src.items = []; src.unidaEn = o.id;
+  store.saveOrder(o); store.saveOrder(src);
+  const sid = src.id; unirModal = null; cuentaId = o.id;
+  toast('Cuenta #'+sid+' unida a la #'+o.id+' ✓'); render();
+}
+
 /* ---------- VENTA MANUAL COMPLETA (olvido / falla del sistema) ---------- */
 function hoyISO(){ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 function openVentaManual(){
@@ -1124,6 +1282,7 @@ function splitUnits(o){
 }
 function openSplit(oid){
   const o = state.orders.find(x=>x.id===oid); if(!o) return;
+  if(o.descuento){ toast('Cuenta con descuento: se cobra completa (o quita el descuento)'); return; }
   if(estaPagado(o)){ toast('La cuenta ya está saldada'); return; }
   const personas = [], asign = {};
   pagosDe(o).forEach((p, idx)=>{
@@ -1205,7 +1364,7 @@ function entregarTodo(oid){
   store.saveOrder(o); toast('Comanda #'+oid+' cerrada'); render();
 }
 function csvDe(orders, filename){
-  let rows = [['Comanda','Tipo','Mesa/Cliente','Mesero','Modo','Fecha','Hora','Producto','Cant','Detalle','Precio','Subtotal','Estado','MinSalida','Pagos','BoletaDNI','BoletaNombre','BoletaContacto','RegistroManual']];
+  let rows = [['Comanda','Tipo','Mesa/Cliente','Mesero','Modo','Fecha','Hora','Producto','Cant','Detalle','Precio','Subtotal','Estado','MinSalida','Pagos','BoletaDNI','BoletaNombre','BoletaContacto','RegistroManual','Descuento']];
   (orders||[]).forEach(o=>{
     const pagosTxt = pagosDe(o).map(p=>p.metodo+':'+p.monto+(p.noCaja?'(noCaja)':'')).join(' | ');
     const b = o.boleta || {};
@@ -1214,7 +1373,8 @@ function csvDe(orders, filename){
       const man = o.manual ? 'cuenta manual' + (o.manualPor?' ('+o.manualPor+')':'') : (i.manual ? 'item manual' + (i.manualPor?' ('+i.manualPor+')':'') : '');
       rows.push([o.id, o.tipo==='llevar'?'Llevar':'Mesa', o.mesa||'', o.mesero||'', o.practica?'practica':'real', d.toLocaleDateString(), hhmm(o.ts), i.name, i.qty,
         modsTxt(i).replace(/,/g,';'), i.price, i.price*i.qty, o.anulada?'anulado':i.estado,
-        i.tsListo?elapsedMin(o.ts,i.tsListo):'', pagosTxt, b.dni||'', (b.nombre||'').replace(/,/g,';'), b.contacto||'', man.replace(/,/g,';')]);
+        i.tsListo?elapsedMin(o.ts,i.tsListo):'', pagosTxt, b.dni||'', (b.nombre||'').replace(/,/g,';'), b.contacto||'', man.replace(/,/g,';'),
+        o.descuento?((o.descuento.tipo==='pct'?o.descuento.valor+'%':'S/'+o.descuento.valor)+' = -'+descMonto(o)):'']);
     });
   });
   const txt = rows.map(r=>r.join(',')).join('\n');
@@ -1456,7 +1616,7 @@ function addReceta(){
 function delReceta(id){ state.recetas = state.recetas.filter(x=>x.id!==id); store.saveList('recetas', state.recetas); render(); }
 
 /* ---------- NAV ---------- */
-function go(v){ view = v; modal = null; customModal = null; chkModal = null; cuentaId = null; recetaModal = null; splitModal = null; armAnular = null; armAnularItem = null; armBorrarP = false; armArchivar = false; addTargetId = null; cierreMode = false; boletaEdit = false; histDay = null; quitarMode = false; manualAddModal = null; ventaModal = null; snapModal = null; cartaModal = null; armRetirar = null; render(); }
+function go(v){ view = v; modal = null; customModal = null; chkModal = null; cuentaId = null; recetaModal = null; splitModal = null; armAnular = null; armAnularItem = null; armBorrarP = false; armArchivar = false; addTargetId = null; cierreMode = false; boletaEdit = false; histDay = null; quitarMode = false; manualAddModal = null; ventaModal = null; snapModal = null; cartaModal = null; armRetirar = null; mesaModal = null; unirModal = null; descModal = null; armEliminar = null; render(); }
 window.go = go; window.goCocina = goCocina; window.setTab = setTab; window.openItem = openItem;
 window.pick = pick; window.addCart = addCart; window.rmCart = rmCart; window.sendOrder = sendOrder;
 window.setEstado = setEstado; window.openChk = openChk; window.deliver = deliver; window.csv = csv;
@@ -1479,7 +1639,10 @@ window.abrirCaja = abrirCaja; window.cerrarCaja = cerrarCaja; window.reabrirCaja
 window.openSplit = openSplit; window.splitAssign = splitAssign; window.splitAddPersona = splitAddPersona;
 window.splitSetMetodo = splitSetMetodo; window.splitCobrar = splitCobrar;
 window.cronoToggle = cronoToggle; window.cronoReset = cronoReset; window.cronoName = cronoName;
-window.pickMesa = pickMesa; window.toggleBoleta = toggleBoleta; window.guardarBoleta = guardarBoleta; window.quitarBoleta = quitarBoleta;
+window.pickMesa = pickMesa; window.mesaNueva = mesaNueva; window.toggleBoleta = toggleBoleta; window.guardarBoleta = guardarBoleta; window.quitarBoleta = quitarBoleta;
+window.openUnir = openUnir; window.unirCuentas = unirCuentas;
+window.openDesc = openDesc; window.aplicarDescuento = aplicarDescuento; window.quitarDescuento = quitarDescuento;
+window.eliminarCuenta = eliminarCuenta;
 
 window.pinPress = pinPress; window.pinBack = pinBack; window.logout = logout;
 
