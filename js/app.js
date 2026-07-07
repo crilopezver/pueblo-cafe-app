@@ -67,6 +67,29 @@ function modsTxt(it){
   if(it.notas) parts.push('Nota: ' + it.notas);
   return parts.join(' · ');
 }
+/* Agrupa ítems iguales (mismo producto y mismo precio unitario) para la cuenta
+   e imprimible: los modificadores no cambian el precio, así que para caja es el
+   mismo producto. Es solo de VISTA: los datos siguen guardándose por separado. */
+function groupCuenta(items){
+  const m = new Map();
+  items.filter(i=>i.estado!=='anulado').forEach(i=>{
+    const k = i.name + '|' + i.price;
+    const g = m.get(k) || { name: i.name, price: i.price, qty: 0 };
+    g.qty += i.qty; m.set(k, g);
+  });
+  return [...m.values()];
+}
+/* Resumen en una línea (registro/historial/unir), agrupado; anulados tachados */
+function resumenItems(items){
+  const act = groupCuenta(items).map(g=>g.qty+'× '+esc(g.name));
+  const anu = new Map();
+  items.filter(i=>i.estado==='anulado').forEach(i=>{
+    const k = i.name + '|' + i.price;
+    const g = anu.get(k) || { name: i.name, qty: 0 };
+    g.qty += i.qty; anu.set(k, g);
+  });
+  return act.concat([...anu.values()].map(g=>'<s>'+g.qty+'× '+esc(g.name)+'</s>')).join(', ');
+}
 
 /* ================= RENDER ================= */
 const app = document.getElementById('app');
@@ -822,11 +845,11 @@ function rRegistro(){
     }
     const sal = salioEn(o);
     const anulados = o.items.filter(i=>i.estado==='anulado').length;
-    const manTag = (o.manual ? '<span class="badge b-manualtag">✏️ MANUAL</span>' : (o.editado ? '<span class="badge b-manualtag">✏️ EDITADA</span>' : ''))
+    const manTag = (esAdmin() ? (o.manual ? '<span class="badge b-manualtag">✏️ MANUAL</span>' : (o.editado ? '<span class="badge b-manualtag">✏️ EDITADA</span>' : '')) : '')
       + (o.descuento ? ' <span class="badge" style="background:#B5722A">🏷 DESC −'+money(descMonto(o))+'</span>' : '');
     return `<div class="regcard${o.practica?' practcard':''}"><b>#${o.id}</b> · ${tipoTxt(o)} ${practTag(o)}${manTag}${o.mesero?' · '+esc(o.mesero):''} · ${new Date(o.ts).toLocaleDateString()} ${hhmm(o.ts)}
       ${badge}${pagoBadge}<br>
-      <span style="color:var(--cafemed)">${o.items.map(i=>(i.estado==='anulado'?'<s>':'')+i.qty+'× '+esc(i.name)+(i.estado==='anulado'?'</s>':'')).join(', ')}</span>
+      <span style="color:var(--cafemed)">${resumenItems(o.items)}</span>
       ${anulados && !o.anulada?`<div style="font-size:11.5px;color:var(--rojo)">${anulados} ítem(s) anulado(s), descontado(s) del total</div>`:''}
       ${sal!==null && !o.anulada ? `<div style="font-size:12px;color:var(--verde);font-weight:700">⏱ Salió en ${sal} min</div>`:''}
       <div style="font-weight:800;color:var(--acento);margin-top:4px">${money(t)}
@@ -899,9 +922,9 @@ function rHistorial(){
       const badge = o.anulada ? '<span class="badge b-anulado" style="float:right">ANULADA</span>' : '';
       return `<div class="regcard" style="margin:8px 0">
         <b>#${o.id}</b> · ${tipoTxt(o)}${o.mesero?' · '+esc(o.mesero):''} · ${hhmm(o.ts)} ${badge}<br>
-        <span style="color:var(--cafemed)">${o.items.map(i=>(i.estado==='anulado'?'<s>':'')+i.qty+'× '+esc(i.name)+(i.estado==='anulado'?'</s>':'')).join(', ')}</span>
+        <span style="color:var(--cafemed)">${resumenItems(o.items)}</span>
         ${o.boleta?`<div style="font-size:11.5px;color:var(--cafemed)">🧾 Boleta · DNI ${esc(o.boleta.dni)}${o.boleta.nombre?' · '+esc(o.boleta.nombre):''}</div>`:''}
-        ${o.manual||o.editado?`<div style="font-size:11.5px;color:#0E7C7B;font-weight:700">✏️ ${o.manual?'Agregada':'Modificada'} manualmente${o.manualPor?' por '+esc(o.manualPor):''}${o.manualTs?' el '+new Date(o.manualTs).toLocaleDateString():''}</div>`:''}
+        ${esAdmin()&&(o.manual||o.editado)?`<div style="font-size:11.5px;color:#0E7C7B;font-weight:700">✏️ ${o.manual?'Agregada':'Modificada'} manualmente${o.manualPor?' por '+esc(o.manualPor):''}${o.manualTs?' el '+new Date(o.manualTs).toLocaleDateString():''}</div>`:''}
         <div style="font-weight:800;color:var(--acento)">${money(t)}</div>
       </div>`;
     }).join('') : '';
@@ -928,10 +951,9 @@ function rCuenta(){
   const o = state.orders.find(x=>x.id===cuentaId);
   if(!o) return '';
   const t = orderTotal(o);
-  const lines = o.items.filter(i=>i.estado!=='anulado').map(i=>`
-    <div class="tline"><span>${i.qty}× ${esc(i.name)}</span><span>${money(i.price*i.qty)}</span></div>
-    ${modsTxt(i)?`<div class="tdet">${esc(modsTxt(i))}</div>`:''}
-    ${i.manual?`<div class="tdet">✏ agregado manualmente</div>`:''}`).join('');
+  const lines = groupCuenta(o.items).map(g=>`
+    <div class="tline"><span>${g.qty}× ${esc(g.name)}</span><span>${money(g.price*g.qty)}</span></div>`).join('');
+  const itemsManuales = o.items.filter(i=>i.manual && i.estado!=='anulado');
   const sal = salioEn(o);
   const pendientesEntrega = o.items.some(i=>i.estado!=='entregado' && i.estado!=='anulado');
   const pgs = pagosDe(o), pend = pendienteDe(o);
@@ -977,9 +999,10 @@ function rCuenta(){
       ${boletaTicket}
       <div style="text-align:center;font-size:11px;margin-top:6px">¡Gracias por su visita!</div>
     </div>
-    ${o.manual?`<div class="manualbadge">✏️ Cuenta AGREGADA MANUALMENTE${o.manualPor?' por '+esc(o.manualPor):''}${o.manualTs?' · '+new Date(o.manualTs).toLocaleDateString()+' '+hhmm(o.manualTs):''}</div>`:''}
-    ${o.editado?`<div class="manualbadge">✏️ MODIFICADA MANUALMENTE · <button class="linklike" onclick="openSnap(${o.id})">ver anterior</button></div>`:''}
-    ${(o.unidaDe && o.unidaDe.length)?`<div class="manualbadge" style="border-color:#5E3A82;background:#F3EDFA;color:#4A2B68">🔗 Incluye la(s) cuenta(s) ${o.unidaDe.map(u=>'#'+u.id).join(', ')} unida(s) aquí</div>`:''}
+    ${esAdmin()&&o.manual?`<div class="manualbadge">✏️ Cuenta AGREGADA MANUALMENTE${o.manualPor?' por '+esc(o.manualPor):''}${o.manualTs?' · '+new Date(o.manualTs).toLocaleDateString()+' '+hhmm(o.manualTs):''}</div>`:''}
+    ${esAdmin()&&o.editado?`<div class="manualbadge">✏️ MODIFICADA MANUALMENTE · <button class="linklike" onclick="openSnap(${o.id})">ver anterior</button></div>`:''}
+    ${esAdmin()&&itemsManuales.length?`<div class="manualbadge">✏️ Ítem(s) agregados manualmente: ${itemsManuales.map(i=>i.qty+'× '+esc(i.name)+(i.manualPor?' · '+esc(i.manualPor):'')+(i.manualTs?' · '+hhmm(i.manualTs):'')+(i.notas?' · “'+esc(i.notas)+'”':'')).join(' — ')}</div>`:''}
+    ${esAdmin()&&(o.unidaDe && o.unidaDe.length)?`<div class="manualbadge" style="border-color:#5E3A82;background:#F3EDFA;color:#4A2B68">🔗 Incluye la(s) cuenta(s) ${o.unidaDe.map(u=>'#'+u.id).join(', ')} unida(s) aquí</div>`:''}
     ${o.descuento?`<div class="manualbadge" style="border-color:#B5722A;background:#FBF3E7;color:#7A4A12">🏷 Descuento ${o.descuento.tipo==='pct'?o.descuento.valor+'%':money(parseFloat(o.descuento.valor))} (−${money(descMonto(o))})${o.descuento.por?' · '+esc(o.descuento.por):''}
       ${pgs.length===0?` · <button class="linklike" onclick="quitarDescuento(${o.id})">quitar</button>`:''}</div>`:''}
     ${rQuitarSec(o)}
@@ -1176,7 +1199,7 @@ function rUnir(){
     <label class="uline" style="cursor:pointer">
       <span><input type="radio" name="unirsel" ${unirModal.sel===c.id?'checked':''} onclick="unirModal.sel=${c.id};render()">
         <b>#${c.id}</b> · ${tipoTxt(c)} · ${money(orderTotal(c))} · ${hhmm(c.ts)}</span>
-      <span class="det">${c.items.filter(i=>i.estado!=='anulado').map(i=>i.qty+'× '+esc(i.name)).join(', ')}</span>
+      <span class="det">${groupCuenta(c.items).map(g=>g.qty+'× '+esc(g.name)).join(', ')}</span>
     </label>`).join('');
   return `<div class="ovl" onclick="if(event.target===this){unirModal=null;render()}"><div class="modal">
     <h3>🔗 Unir cuentas · #${o.id} (${tipoTxt(o)})</h3>
