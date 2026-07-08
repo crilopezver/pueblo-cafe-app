@@ -611,7 +611,11 @@ async function sendOrder(){
   }
 }
 function pendingOrders(){
-  return state.orders.filter(o=>!o.anulada && !esFantasma(o) && o.items.some(it=>it.estado!=='entregado')).slice().reverse();
+  // "activo" = queda algo por preparar/entregar. Los ítems anulados NO cuentan
+  // (si no, un pedido con un ítem anulado se quedaba pegado aunque todo lo demás
+  //  esté entregado y la cuenta saldada).
+  return state.orders.filter(o=>!o.anulada && !esFantasma(o)
+    && o.items.some(it=>it.estado!=='entregado' && it.estado!=='anulado')).slice().reverse();
 }
 
 /* ---------- COCINA ---------- */
