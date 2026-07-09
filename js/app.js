@@ -320,7 +320,7 @@ function rOrdMesero(o){
     let txtArm = '¿Anular este ítem? Toca de nuevo';
     if(it.estado==='preparando' || it.estado==='listo') txtArm = '⚠ Ya se está preparando — coordina con cocina. ¿Anular igual?';
     const anBtn = `<button class="anularbtn mini ${arm?'armado':''}" onclick="anularItem(${o.id},${it.uid})">${arm?txtArm:'Anular ítem'}</button>`;
-    const t = it.tsListo ? ` · salió en ${elapsedMin(o.ts, it.tsListo)} min` : '';
+    const t = it.tsListo ? ` · salió en ${elapsedMin(pedTs(o,it), it.tsListo)} min` : '';
     const late = isLate(o, it) ? ` <span class="late">⏰ RETRASADO</span>` : '';
     return `<div class="kitem"><span class="badge b-${it.estado}">${it.estado.toUpperCase()}</span>${late}<span style="font-size:11px;color:var(--gris)">${t}</span>
       <span class="knm"> ${it.qty}× ${esc(it.name)}</span>
@@ -348,7 +348,8 @@ function agregarItems(){
   const o = state.orders.find(x=>x.id===addTargetId);
   if(!o){ addTargetId = null; render(); return; }
   const base = o.items.reduce((m,i)=>Math.max(m, i.uid), 0);
-  cart.forEach((it,k)=> o.items.push({ uid: base+k+1, ...it, estado:'pendiente' }));
+  const now = Date.now();
+  cart.forEach((it,k)=> o.items.push({ uid: base+k+1, ...it, estado:'pendiente', tsPed: now, agregado: true }));
   store.saveOrder(o);
   const id = o.id; addTargetId = null; cart = [];
   toast('Ítems agregados al pedido #'+id+' ✓'); render();
@@ -596,9 +597,10 @@ async function sendOrder(){
   render();
   try{
     const id = await store.nextOrderId();
-    const o = { id, mesa: mesaSnap, tipo: tipoSnap, ts: Date.now(),
+    const ts = Date.now();
+    const o = { id, mesa: mesaSnap, tipo: tipoSnap, ts,
       mesero: user ? user.nombre : '', practica: practicaSnap,
-      items: cartSnap.map((it,i)=>({uid:i+1, ...it, estado:'pendiente'})) };
+      items: cartSnap.map((it,i)=>({uid:i+1, ...it, estado:'pendiente', tsPed: ts})) };
     store.saveOrder(o);
     toast('Comanda #' + o.id + ' enviada a cocina ✓');
   }catch(e){
@@ -643,10 +645,10 @@ function rCocina(){
       let btn='';
       if(it.estado==='pendiente') btn = `<button class="stbtn st-pendiente" onclick="setEstado(${o.id},${it.uid},'preparando')">Empezar ▶</button>`;
       else if(it.estado==='preparando') btn = `<button class="stbtn st-preparando" onclick="setEstado(${o.id},${it.uid},'listo')">Marcar listo ✓</button>`;
-      else btn = `<span class="badge b-listo">LISTO en ${elapsedMin(o.ts, it.tsListo)} min — esperando entrega</span>`;
+      else btn = `<span class="badge b-listo">LISTO en ${elapsedMin(pedTs(o,it), it.tsListo)} min — esperando entrega</span>`;
       const rec = recetaFor(it.name);
       const recBtn = rec ? `<button class="stbtn" style="background:var(--cafemed)" onclick="verReceta('${esc(it.name)}')">📖 Ver receta</button>` : '';
-      const late = isLate(o, it) ? `<span class="late">⏰ PEDIDO RETRASADO · ${elapsedMin(o.ts, Date.now())} min</span> ` : '';
+      const late = isLate(o, it) ? `<span class="late">⏰ PEDIDO RETRASADO · ${elapsedMin(pedTs(o,it), Date.now())} min</span> ` : '';
       return `<div class="kitem">${late}<div class="knm">${it.qty}× ${esc(it.name)}${it.fueraCarta?' <span class="fctatag">fuera de carta</span>':''}</div>
         <div class="kmods">${esc(modsTxt(it))||'Sin modificadores'}</div>${btn}${recBtn}</div>`;
     }).join('');
@@ -657,7 +659,8 @@ function rCocina(){
   // banner de retrasados: ítems rápidos con más de 10 min sin estar listos
   let nLate = 0;
   ords.forEach(o=>o.items.forEach(it=>{ if(it.station===station && isLate(o, it)) nLate++; }));
-  const lateBanner = nLate ? `<div class="latebanner">⏰ ¡${nLate} pedido(s) rápido(s) retrasado(s)! Pasaron más de ${LATE_MIN} minutos.</div>` : '';
+  const umbral = station==='salados' ? SALADO_LATE_MIN : LATE_MIN;
+  const lateBanner = nLate ? `<div class="latebanner">⏰ ¡${nLate} ítem(s) retrasado(s)! Pasaron más de ${umbral} minutos.</div>` : '';
   const cronosHtml = station === 'salados' ? rCronos() : '';
   return rHeader(name, station.toUpperCase()) + `<main>
     ${cronosHtml}
@@ -710,8 +713,11 @@ function rRecetaModal(){
     <button class="cls" onclick="recetaModal=null;render()">Cerrar</button>
   </div></div>`;
 }
+function pedTs(o, it){ return it.tsPed || o.ts; }  // hora en que se SOLICITÓ el ítem (compat: comandas viejas)
 function salioEn(o){
-  const ts = o.items.filter(i=>i.tsListo).map(i=>i.tsListo);
+  // "tiempo de entrega general" — solo tiene sentido si NO hubo ítems agregados después
+  if(o.items.some(i=>i.agregado && i.estado!=='anulado')) return null;
+  const ts = o.items.filter(i=>i.tsListo && i.estado!=='anulado').map(i=>i.tsListo);
   return ts.length ? elapsedMin(o.ts, Math.max(...ts)) : null;
 }
 function orderTotal(o){
@@ -728,7 +734,17 @@ function setPago(oid, metodo){
 }
 
 /* ---------- APERTURA / CIERRE DE CAJA ---------- */
+// ¿quedaron cuentas reales de un día anterior sin archivar?
+function hayDiaAnteriorSinArchivar(){
+  const c = state.caja;
+  const hayReales = state.orders.some(o=>!o.practica && !esFantasma(o));
+  return hayReales && !!(c && c.fecha && c.fecha !== dayKey());
+}
 function abrirCaja(){
+  if(hayDiaAnteriorSinArchivar()){
+    toast('Hay un día anterior sin archivar — archívalo antes de abrir caja');
+    render(); return;
+  }
   const ef = parseFloat((document.getElementById('cajaEf')||{}).value);
   const ya = parseFloat((document.getElementById('cajaYa')||{}).value);
   if(isNaN(ef) || isNaN(ya)){ toast('Ingresa ambos fondos: efectivo y Yape'); return; }
@@ -736,12 +752,22 @@ function abrirCaja(){
     aperturaTs: Date.now(), aperturaPor: user?user.nombre:'', efectivoContado:null, yapeContado:null, cierreTs:null, cierrePor:'' });
   cierreMode = false; toast('Caja abierta ✓'); render();
 }
+// admin: archiva el día anterior y deja lista la apertura
+function archivarYAbrir(){
+  if(!esAdmin()){ toast('Solo el administrador puede archivar el día'); return; }
+  store.archivarDia(); toast('Día anterior archivado ✓ — ya puedes abrir caja'); render();
+}
 function cerrarCaja(){
   const ef = parseFloat((document.getElementById('cierreEf')||{}).value);
   const ya = parseFloat((document.getElementById('cierreYa')||{}).value);
   if(isNaN(ef) || isNaN(ya)){ toast('Ingresa el efectivo y el Yape contados'); return; }
-  store.saveCaja({ ...state.caja, estado:'cerrada', efectivoContado:ef, yapeContado:ya, cierreTs: Date.now(), cierrePor: user?user.nombre:'' });
-  cierreMode = false; toast('Caja cerrada ✓'); render();
+  // guardar snapshot de ventas ANTES de archivar (archivar vacía los pedidos)
+  const vef = ventasMetodo('efectivo'), vya = ventasMetodo('yape');
+  store.saveCaja({ ...state.caja, estado:'cerrada', efectivoContado:ef, yapeContado:ya,
+    ventasEfectivo:vef, ventasYape:vya, cierreTs: Date.now(), cierrePor: user?user.nombre:'' });
+  // al cerrar, el día se archiva automáticamente (las cuentas van al historial)
+  store.archivarDia();
+  cierreMode = false; toast('Caja cerrada y día archivado en el historial ✓'); render();
 }
 function reabrirCaja(){ store.saveCaja({ ...state.caja, estado:'abierta' }); toast('Caja reabierta'); render(); }
 function rCaja(){
@@ -766,18 +792,33 @@ function rCaja(){
       <div class="fieldrow"><input id="cierreEf" type="number" inputmode="decimal" placeholder="Efectivo contado (S/)"></div>
       <div class="fieldrow"><input id="cierreYa" type="number" inputmode="decimal" placeholder="Yape contado (S/)"></div>
       <div class="cajarow"><span>Esperado</span><span>💵 ${money(espEf)} · 📱 ${money(espYa)}</span></div>
-      <button class="sendbtn" onclick="cerrarCaja()">Confirmar cierre</button>
+      <div style="font-size:12px;color:#7A4A12;background:#FBF3E7;border-radius:8px;padding:8px;margin:6px 0">📦 Al confirmar, la caja se cierra <b>y el día se archiva</b> al historial (las cuentas dejan de aparecer en el registro de hoy).</div>
+      <button class="sendbtn" onclick="cerrarCaja()">Confirmar cierre y archivar día</button>
       <button class="cls" onclick="cierreMode=false;render()">Cancelar</button>
     </div>`;
   }
   if(c && c.estado==='cerrada' && c.fecha===hoy){
-    const espEf = c.fondoEfectivo + vef, espYa = c.fondoYape + vya;
+    // usar el snapshot de ventas guardado al cerrar (los pedidos ya se archivaron)
+    const vefC = (typeof c.ventasEfectivo==='number') ? c.ventasEfectivo : vef;
+    const vyaC = (typeof c.ventasYape==='number') ? c.ventasYape : vya;
+    const espEf = c.fondoEfectivo + vefC, espYa = c.fondoYape + vyaC;
     return `<div class="cajabox cerrada">
       <div class="cajah">🔒 Caja cerrada hoy</div>
       <div class="cajarow"><span>Efectivo</span><span>esp. ${money(espEf)} · cont. ${money(c.efectivoContado)} · <b>${dtxt((c.efectivoContado||0)-espEf)}</b></span></div>
       <div class="cajarow"><span>Yape</span><span>esp. ${money(espYa)} · cont. ${money(c.yapeContado)} · <b>${dtxt((c.yapeContado||0)-espYa)}</b></span></div>
       <div style="font-size:11px;color:var(--gris);margin-top:4px">Cerró ${esc(c.cierrePor)||'—'} · ${hhmm(c.cierreTs)}</div>
       <button class="csvbtn" style="background:var(--cafemed);margin-top:8px" onclick="reabrirCaja()">Reabrir caja (pruebas)</button>
+    </div>`;
+  }
+  // BLOQUEO: hay cuentas de un día anterior sin archivar
+  if(hayDiaAnteriorSinArchivar()){
+    const fechaVieja = c && c.fecha ? c.fecha : 'anterior';
+    return `<div class="cajabox cerrada">
+      <div class="cajah">⚠ Día anterior sin archivar</div>
+      <div style="font-size:12.5px;color:var(--cafemed);margin-bottom:8px">Quedaron cuentas del <b>${esc(fechaVieja)}</b> sin archivar. Para no mezclar días, hay que archivarlas al historial antes de abrir la caja de hoy.</div>
+      ${esAdmin()
+        ? `<button class="sendbtn" onclick="archivarYAbrir()">📦 Archivar día anterior y continuar</button>`
+        : `<div style="font-size:12px;color:#7A1F14;background:#FBEAE7;border-radius:8px;padding:8px">Pídele al <b>administrador</b> (Martín) que archive el día anterior desde Caja. Solo el admin puede archivar.</div>`}
     </div>`;
   }
   return `<div class="cajabox">
@@ -992,7 +1033,6 @@ function rCuenta(){
       <hr>
       <div class="tline"><span>Comanda #${o.id}</span><span>${new Date(o.ts).toLocaleDateString()} ${hhmm(o.ts)}</span></div>
       <div class="tline"><span>${o.tipo==='llevar'?'PARA LLEVAR':'Mesa'}</span><span>${esc(o.mesa||'—')}</span></div>
-      ${sal!==null?`<div class="tline"><span>Tiempo de salida</span><span>${sal} min</span></div>`:''}
       <hr>
       ${lines}
       <hr>
@@ -1003,6 +1043,7 @@ function rCuenta(){
       ${boletaTicket}
       <div style="text-align:center;font-size:11px;margin-top:6px">¡Gracias por su visita!</div>
     </div>
+    ${sal!==null?`<div class="manualbadge" style="border-color:#2E7D46;background:#EAF6EE;color:#1E5631">⏱ Uso interno · Tiempo de entrega: ${sal} min (no sale en el imprimible del cliente)</div>`:''}
     ${esAdmin()&&o.manual?`<div class="manualbadge">✏️ Cuenta AGREGADA MANUALMENTE${o.manualPor?' por '+esc(o.manualPor):''}${o.manualTs?' · '+new Date(o.manualTs).toLocaleDateString()+' '+hhmm(o.manualTs):''}</div>`:''}
     ${esAdmin()&&o.editado?`<div class="manualbadge">✏️ MODIFICADA MANUALMENTE · <button class="linklike" onclick="openSnap(${o.id})">ver anterior</button></div>`:''}
     ${esAdmin()&&itemsManuales.length?`<div class="manualbadge">✏️ Ítem(s) agregados manualmente: ${itemsManuales.map(i=>i.qty+'× '+esc(i.name)+(i.manualPor?' · '+esc(i.manualPor):'')+(i.manualTs?' · '+hhmm(i.manualTs):'')+(i.notas?' · “'+esc(i.notas)+'”':'')).join(' — ')}</div>`:''}
@@ -1098,7 +1139,7 @@ function addManualItem(){
   const p = PROD[desc];
   o.items.push({ uid, name: desc, price: Math.round(precio*100)/100, station: p?p.station:'salados', cat: p?p.cat:'Manual',
     qty: m.qty, mods:{}, notas:(m.notas||'').trim(), estado:'entregado', tsEnt: Date.now(),
-    manual:true, manualPor: user?user.nombre:'', manualTs: Date.now() });
+    tsPed: Date.now(), agregado:true, manual:true, manualPor: user?user.nombre:'', manualTs: Date.now() });
   o.editado = true;
   store.saveOrder(o); manualAddModal = null;
   toast('Ítem agregado manualmente ✓ (marcado en la cuenta)'); render();
@@ -1289,7 +1330,7 @@ async function guardarVentaManual(){
   const o = { id, mesa: (v.mesa||'').trim() || 'Venta manual', tipo:'mesa', ts, practica:false,
     mesero: user?user.nombre:'', manual:true, manualPor: user?user.nombre:'', manualTs: Date.now(),
     items: v.items.map((i,k)=>({ uid:k+1, name:i.name, price:i.price, station: PROD[i.name]?PROD[i.name].station:'salados',
-      cat: PROD[i.name]?PROD[i.name].cat:'Manual', qty:i.qty, mods:{}, notas:'', estado:'entregado', tsEnt: ts,
+      cat: PROD[i.name]?PROD[i.name].cat:'Manual', qty:i.qty, mods:{}, notas:'', estado:'entregado', tsEnt: ts, tsPed: ts,
       manual:true, manualPor:user?user.nombre:'', manualTs: Date.now() })) };
   if(v.metodo){
     const pago = { monto: total, metodo: v.metodo, detalle: 'venta manual' + (esHoy?'':' del '+v.fecha) };
@@ -1400,7 +1441,7 @@ function csvDe(orders, filename){
       const man = o.manual ? 'cuenta manual' + (o.manualPor?' ('+o.manualPor+')':'') : (i.manual ? 'item manual' + (i.manualPor?' ('+i.manualPor+')':'') : '');
       rows.push([o.id, o.tipo==='llevar'?'Llevar':'Mesa', o.mesa||'', o.mesero||'', o.practica?'practica':'real', d.toLocaleDateString(), hhmm(o.ts), i.name, i.qty,
         modsTxt(i).replace(/,/g,';'), i.price, i.price*i.qty, o.anulada?'anulado':i.estado,
-        i.tsListo?elapsedMin(o.ts,i.tsListo):'', pagosTxt, b.dni||'', (b.nombre||'').replace(/,/g,';'), b.contacto||'', man.replace(/,/g,';'),
+        i.tsListo?elapsedMin(pedTs(o,i),i.tsListo):'', pagosTxt, b.dni||'', (b.nombre||'').replace(/,/g,';'), b.contacto||'', man.replace(/,/g,';'),
         o.descuento?((o.descuento.tipo==='pct'?o.descuento.valor+'%':'S/'+o.descuento.valor)+' = -'+descMonto(o)):'']);
     });
   });
@@ -1662,7 +1703,7 @@ window.verReceta = verReceta; window.toggleAllListos = toggleAllListos;
 window.addTarea = addTarea; window.toggleTarea = toggleTarea; window.delTarea = delTarea; window.resetTareas = resetTareas;
 window.addReceta = addReceta; window.delReceta = delReceta;
 window.startAgregar = startAgregar; window.cancelAgregar = cancelAgregar; window.agregarItems = agregarItems;
-window.abrirCaja = abrirCaja; window.cerrarCaja = cerrarCaja; window.reabrirCaja = reabrirCaja;
+window.abrirCaja = abrirCaja; window.cerrarCaja = cerrarCaja; window.reabrirCaja = reabrirCaja; window.archivarYAbrir = archivarYAbrir;
 window.openSplit = openSplit; window.splitAssign = splitAssign; window.splitAddPersona = splitAddPersona;
 window.splitSetMetodo = splitSetMetodo; window.splitCobrar = splitCobrar;
 window.cronoToggle = cronoToggle; window.cronoReset = cronoReset; window.cronoName = cronoName;

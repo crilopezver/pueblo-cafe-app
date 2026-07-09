@@ -117,7 +117,8 @@ let MENU = [
    {n:'Agua', p:3, mods:['agua','frio']}]},
 ];
 // productos de rápida elaboración (pedido de Martín: bebidas, postres porcionados, waffles)
-const LATE_MIN = 10; // minutos para considerar retrasado un producto rápido
+const LATE_MIN = 10; // minutos para considerar retrasado un producto rápido (dulces/barra)
+const SALADO_LATE_MIN = 20; // minutos para considerar retrasado un producto de salados
 const RAPIDOS = new Set(['Waffles','Copas de helado','Milkshakes','Ensaladas de fruta','Postres de la semana',
   'Bebidas calientes','Frappes','Batidos','Jugos clásicos','Jugos combinados',
   'Cocteles clásicos','Cocteles de la casa','Cervezas y otras']);
@@ -141,8 +142,16 @@ function setCarta(carta){
   MENU = arr;
   buildProdIndex();
 }
+function lateMinFor(it){
+  // umbral de retraso según la cocina: salados 20 min, rápidos de dulces/barra 10 min.
+  if(it.station==='salados') return SALADO_LATE_MIN;
+  if(PROD[it.name] && PROD[it.name].rapido) return LATE_MIN;
+  return null; // sin umbral definido → nunca marca retraso
+}
 function isLate(o, it){
-  return (it.estado==='pendiente' || it.estado==='preparando')
-    && PROD[it.name] && PROD[it.name].rapido
-    && elapsedMin(o.ts, Date.now()) >= LATE_MIN;
+  if(it.estado!=='pendiente' && it.estado!=='preparando') return false;
+  const um = lateMinFor(it);
+  if(um === null) return false;
+  const ped = it.tsPed || o.ts;   // desde que se SOLICITÓ el ítem (no desde que abrió la comanda)
+  return elapsedMin(ped, Date.now()) >= um;
 }
