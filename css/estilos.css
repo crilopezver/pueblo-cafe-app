@@ -96,6 +96,9 @@
   .late{display:inline-block; background:var(--rojo); color:#fff; font-size:11.5px; font-weight:800; padding:3px 10px; border-radius:99px; animation:parpadeo 1s infinite;}
   .latebanner{background:var(--rojo); color:#fff; border-radius:12px; padding:12px 14px; margin-bottom:12px; font-size:14px; font-weight:800; animation:parpadeo 1.4s infinite;}
   @keyframes parpadeo{0%,100%{opacity:1} 50%{opacity:.55}}
+  @keyframes parpadeoNuevo{0%,100%{box-shadow:0 0 0 0 rgba(217,119,6,0); transform:translateY(0)} 50%{box-shadow:0 0 0 6px rgba(217,119,6,.55); transform:translateY(-1px)}}
+  .ordcard.nuevo{border-color:#D97706 !important; animation:parpadeoNuevo 1s ease-in-out infinite;}
+  .nuevotag{display:inline-block; background:#D97706; color:#fff; font-size:10.5px; font-weight:800; padding:2px 8px; border-radius:99px; margin-left:6px; vertical-align:middle;}
   .b-anulado{background:var(--rojo);}
   .anularbtn{background:none; border:1.5px solid var(--rojo); color:var(--rojo); border-radius:8px; padding:7px 12px; font-size:12.5px; font-weight:700; margin-top:8px;}
   .anularbtn.armado{background:var(--rojo); color:#fff;}

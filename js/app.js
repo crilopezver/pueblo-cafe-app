@@ -621,11 +621,70 @@ function pendingOrders(){
 }
 
 /* ---------- COCINA ---------- */
-function goCocina(st){ station = st; view = 'cocina'; render(); }
+/* ===== ALERTA SONORA + PARPADEO DE PEDIDOS NUEVOS (por cocina, local al equipo) ===== */
+const BLINK_MS = 30000;          // parpadea hasta 30 s o hasta "Empezar"
+let _audioCtx = null;
+let _seenStation = null;         // qué cocina se sembró
+let _seenKitchen = null;         // Set de "oid:uid" ya vistos en esta cocina
+let _blinkTimer = null;
+function unlockAudio(){
+  try{
+    if(!_audioCtx){ const AC = window.AudioContext || window.webkitAudioContext; if(AC) _audioCtx = new AC(); }
+    if(_audioCtx && _audioCtx.state === 'suspended') _audioCtx.resume();
+  }catch(e){}
+}
+// campanilla generada (dos tonos sinusoidales con envolvente suave) — sin copyright
+function playChime(){
+  if(typeof window!=='undefined'){ window.__chimes = (window.__chimes||0) + 1; }  // hook de pruebas (cuenta intentos de alerta)
+  try{
+    unlockAudio(); const ctx = _audioCtx; if(!ctx || ctx.state !== 'running') return;
+    const t0 = ctx.currentTime;
+    [[880,0],[1320,0.16]].forEach(([f,dt])=>{
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = 'sine'; o.frequency.value = f;
+      g.gain.setValueAtTime(0.0001, t0+dt);
+      g.gain.exponentialRampToValueAtTime(0.35, t0+dt+0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0+dt+0.55);
+      o.connect(g); g.connect(ctx.destination);
+      o.start(t0+dt); o.stop(t0+dt+0.6);
+    });
+  }catch(e){}
+}
+function keysCocina(st){
+  const ks = new Set();
+  (state.orders||[]).forEach(o=>{ if(o.anulada || esFantasma(o)) return;
+    o.items.forEach(it=>{ if(it.station===st && (it.estado==='pendiente'||it.estado==='preparando')) ks.add(o.id+':'+it.uid); });
+  });
+  return ks;
+}
+// se llama en cada render de cocina: siembra en silencio al entrar, suena si llega algo nuevo
+function detectarNuevosCocina(){
+  const cur = keysCocina(station);
+  if(_seenStation !== station || _seenKitchen === null){ _seenStation = station; _seenKitchen = cur; return; }
+  let nuevos = 0; cur.forEach(k=>{ if(!_seenKitchen.has(k)) nuevos++; });
+  _seenKitchen = cur;
+  if(nuevos > 0) playChime();
+}
+// un pedido "parpadea" si tiene algún ítem pendiente con menos de 30 s desde que se solicitó
+function ordParpadea(o){
+  return o.items.some(it=>it.station===station && it.estado==='pendiente' && (Date.now()-pedTs(o,it)) < BLINK_MS);
+}
+// re-render exacto cuando expire el parpadeo más próximo (sin polling)
+function programarFinParpadeo(ords){
+  let soonest = Infinity;
+  ords.forEach(o=>o.items.forEach(it=>{ if(it.station===station && it.estado==='pendiente'){
+    const rem = BLINK_MS - (Date.now()-pedTs(o,it)); if(rem>0 && rem<soonest) soonest = rem;
+  }}));
+  if(_blinkTimer){ clearTimeout(_blinkTimer); _blinkTimer = null; }
+  if(soonest < Infinity){ _blinkTimer = setTimeout(()=>{ _blinkTimer=null; if(view==='cocina') render(); }, soonest+60); }
+}
+function goCocina(st){ station = st; view = 'cocina'; _seenStation = null; _seenKitchen = null; render(); }
 function rCocina(){
   const name = station==='dulces' ? 'Cocina Dulces · Jugos · Barra' : 'Cocina Salados';
   const activo = it => it.estado!=='entregado' && it.estado!=='anulado';
   const ords = state.orders.filter(o=>!o.anulada && !esFantasma(o) && o.items.some(it=>it.station===station && activo(it)));
+  detectarNuevosCocina();        // suena campanilla si llegó un pedido nuevo a esta cocina
+  programarFinParpadeo(ords);     // apaga el parpadeo a los 30 s exactos
   // sugerencia de lotes: agrupar ítems pendientes/preparando del mismo producto
   const act = [];
   ords.forEach(o=>o.items.forEach(it=>{ if(it.station===station && (it.estado==='pendiente'||it.estado==='preparando')) act.push({o,it}); }));
@@ -654,7 +713,8 @@ function rCocina(){
     }).join('');
     if(!items) return '';
     const espera = elapsedMin(o.ts, Date.now());
-    return `<div class="ordcard ${station}"><div class="ohead"><span>#${o.id} · ${tipoTxt(o)} ${practTag(o)}</span><span>${hhmm(o.ts)} · hace ${espera} min</span></div>${items}</div>`;
+    const nuevo = ordParpadea(o) ? ' nuevo' : '';
+    return `<div class="ordcard ${station}${nuevo}"><div class="ohead"><span>#${o.id} · ${tipoTxt(o)} ${practTag(o)}${nuevo?' <span class="nuevotag">NUEVO</span>':''}</span><span>${hhmm(o.ts)} · hace ${espera} min</span></div>${items}</div>`;
   }).join('');
   // banner de retrasados: ítems rápidos con más de 10 min sin estar listos
   let nLate = 0;
@@ -1724,5 +1784,8 @@ setInterval(()=>{
 }, 1000);
 
 // arranque: el store notifica cada cambio de datos (local o Firebase)
+// desbloquea el audio con el primer gesto del usuario (regla de los navegadores)
+document.addEventListener('pointerdown', unlockAudio);
+document.addEventListener('keydown', unlockAudio);
 store.init(s => { state = s; setCarta(s.carta); render(); });
 render();
