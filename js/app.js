@@ -681,7 +681,9 @@ function programarFinParpadeo(ords){
 function goCocina(st){ station = st; view = 'cocina'; _seenStation = null; _seenKitchen = null; render(); }
 function rCocina(){
   const name = station==='dulces' ? 'Cocina Dulces · Jugos · Barra' : 'Cocina Salados';
-  const activo = it => it.estado!=='entregado' && it.estado!=='anulado';
+  // La cocina solo muestra lo que falta hacer: en cuanto un ítem se marca "listo"
+  // desaparece de aquí y pasa a verse solo del lado del mesero para entregar (v15).
+  const activo = it => it.estado==='pendiente' || it.estado==='preparando';
   const ords = state.orders.filter(o=>!o.anulada && !esFantasma(o) && o.items.some(it=>it.station===station && activo(it)));
   detectarNuevosCocina();        // suena campanilla si llegó un pedido nuevo a esta cocina
   programarFinParpadeo(ords);     // apaga el parpadeo a los 30 s exactos
@@ -703,8 +705,7 @@ function rCocina(){
     const items = o.items.filter(it=>it.station===station && activo(it)).map(it=>{
       let btn='';
       if(it.estado==='pendiente') btn = `<button class="stbtn st-pendiente" onclick="setEstado(${o.id},${it.uid},'preparando')">Empezar ▶</button>`;
-      else if(it.estado==='preparando') btn = `<button class="stbtn st-preparando" onclick="setEstado(${o.id},${it.uid},'listo')">Marcar listo ✓</button>`;
-      else btn = `<span class="badge b-listo">LISTO en ${elapsedMin(pedTs(o,it), it.tsListo)} min — esperando entrega</span>`;
+      else btn = `<button class="stbtn st-preparando" onclick="setEstado(${o.id},${it.uid},'listo')">Marcar listo ✓</button>`;
       const rec = recetaFor(it.name);
       const recBtn = rec ? `<button class="stbtn" style="background:var(--cafemed)" onclick="verReceta('${esc(it.name)}')">📖 Ver receta</button>` : '';
       const late = isLate(o, it) ? `<span class="late">⏰ PEDIDO RETRASADO · ${elapsedMin(pedTs(o,it), Date.now())} min</span> ` : '';
