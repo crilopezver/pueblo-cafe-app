@@ -7,7 +7,7 @@
 /* menú y modificadores: ver js/menu.js */
 
 /* ================= ESTADO (gestionado por js/sync.js) ================= */
-let state = { orders:[], compras:[], tareas:[], recetas:[], caja:null, modo:'real', historial:[], noDisponible:[], carta:[] };
+let state = { orders:[], compras:[], tareas:[], recetas:[], caja:null, modo:'real', historial:[], cajas:[], noDisponible:[], carta:[] };
 let user = null;
 try{ const u = localStorage.getItem('pc_user'); if(u) user = JSON.parse(u); }catch(e){}
 
@@ -162,10 +162,10 @@ function ventasMetodo(metodo){
 }
 // GASTOS / SALIDAS DE CAJA (v16): viven dentro de la caja del día (caja.gastos), así se
 // reinician solos al abrir la caja del día siguiente y quedan en el cierre. Restan del esperado.
-function gastosDeCaja(){ const c = state.caja; return (c && Array.isArray(c.gastos)) ? c.gastos : []; }
-function gastosMetodo(metodo){
-  return gastosDeCaja().filter(g=>!g.anulado && g.metodo===metodo).reduce((s,g)=>s+(g.monto||0),0);
-}
+function gastosDeArr(caja){ return (caja && Array.isArray(caja.gastos)) ? caja.gastos : []; }
+function gastosSum(caja, metodo){ return gastosDeArr(caja).filter(g=>!g.anulado && g.metodo===metodo).reduce((s,g)=>s+(g.monto||0),0); }
+function gastosDeCaja(){ return gastosDeArr(state.caja); }
+function gastosMetodo(metodo){ return gastosSum(state.caja, metodo); }
 
 function bannerTxt(){
   return store.mode === 'firebase'
@@ -1011,7 +1011,10 @@ function archivarDia(){
   selEntrega.clear();
   armArchivar = false; store.archivarDia(); toast('Día archivado — se guardó en el historial ✓'); render();
 }
-function csvHistorial(){ csvDe(state.historial || [], 'historial_pueblo_cafe.csv'); }
+function csvHistorial(){
+  const gastos = (state.cajas || []).flatMap(c => gastosDeArr(c));
+  csvDe(state.historial || [], 'historial_pueblo_cafe.csv', gastos);
+}
 
 /* ---------- HISTORIAL DE DÍAS (solo lectura) ---------- */
 function toggleHistDay(k){ histDay = (histDay===k) ? null : k; render(); }
@@ -1035,7 +1038,28 @@ function rHistorial(){
     const sinCobrar = tot - ef - ya;
     const fechaTxt = new Date(os[0].ts).toLocaleDateString();
     const abierto = histDay===k;
-    const detalle = abierto ? os.slice().reverse().map(o=>{
+    // bloque de caja del día (fondo, ventas, gastos, esperado, contado, diferencia) si se archivó
+    const cj = (state.cajas||[]).find(x=>x.fecha===k);
+    let cajaBlock = '';
+    if(abierto && cj){
+      const gEf = gastosSum(cj,'efectivo'), gYa = gastosSum(cj,'yape');
+      const espEf = (cj.fondoEfectivo||0) + ef - gEf, espYa = (cj.fondoYape||0) + ya - gYa;
+      const dtxt = d => Math.abs(d) < 0.005 ? 'cuadra ✓' : (d > 0 ? 'sobra '+money(d) : 'falta '+money(-d));
+      const cont = (typeof cj.efectivoContado==='number');
+      const gLista = gastosDeArr(cj).map(g=>`<div style="font-size:11.5px;color:${g.anulado?'var(--gris)':'var(--cafemed)'};${g.anulado?'text-decoration:line-through':''}">• ${money(g.monto)} · ${g.metodo==='yape'?'📱':'💵'} ${esc(g.concepto)}${g.por?' · '+esc(g.por):''}${g.anulado?' (anulado)':''}</div>`).join('');
+      cajaBlock = `<div class="regcard" style="margin:8px 0;background:#FBF3E7">
+        <b>🧮 Caja del día</b>
+        <div class="cajarow"><span>Fondo</span><span>💵 ${money(cj.fondoEfectivo||0)} · 📱 ${money(cj.fondoYape||0)}</span></div>
+        <div class="cajarow"><span>Ventas</span><span>💵 ${money(ef)} · 📱 ${money(ya)}</span></div>
+        ${(gEf||gYa)?`<div class="cajarow" style="color:var(--rojo)"><span>− Gastos</span><span>💵 ${money(gEf)} · 📱 ${money(gYa)}</span></div>`:''}
+        <div class="cajarow" style="font-weight:800"><span>Esperado</span><span>💵 ${money(espEf)} · 📱 ${money(espYa)}</span></div>
+        ${cont?`<div class="cajarow"><span>Contado</span><span>💵 ${money(cj.efectivoContado)} · 📱 ${money(cj.yapeContado)}</span></div>
+        <div class="cajarow"><span>Diferencia</span><span>💵 ${dtxt((cj.efectivoContado||0)-espEf)} · 📱 ${dtxt((cj.yapeContado||0)-espYa)}</span></div>`:`<div style="font-size:11.5px;color:var(--gris)">Caja no cerrada formalmente ese día.</div>`}
+        ${gLista?`<div style="margin-top:6px"><b style="font-size:12px">Gastos del día:</b>${gLista}</div>`:''}
+        <div style="font-size:11px;color:var(--gris);margin-top:4px">${cj.cierrePor?'Cerró '+esc(cj.cierrePor):''}${cj.cierreTs?' · '+hhmm(cj.cierreTs):''}</div>
+      </div>`;
+    }
+    const detalle = abierto ? cajaBlock + os.slice().reverse().map(o=>{
       const t = netDe(o);
       const badge = o.anulada ? '<span class="badge b-anulado" style="float:right">ANULADA</span>' : '';
       return `<div class="regcard" style="margin:8px 0">

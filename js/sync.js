@@ -48,7 +48,7 @@ function clean(obj){ return JSON.parse(JSON.stringify(obj)); }
 
 /* ------------------------- MODO LOCAL ------------------------- */
 function LocalStore(){
-  let data = { orders:[], compras:[], tareas:clean(SEED_TAREAS), recetas:clean(SEED_RECETAS), caja:null, modo:'real', historial:[], noDisponible:[], carta:clean(MENU_SEED), seq:1 };
+  let data = { orders:[], compras:[], tareas:clean(SEED_TAREAS), recetas:clean(SEED_RECETAS), caja:null, modo:'real', historial:[], cajas:[], noDisponible:[], carta:clean(MENU_SEED), seq:1 };
   try{
     const s = localStorage.getItem('pc_demo');
     if(s){
@@ -60,6 +60,7 @@ function LocalStore(){
       data.caja    = old.caja || null;
       data.modo    = old.modo || 'real';
       data.historial = old.historial || [];
+      data.cajas = old.cajas || [];
       data.noDisponible = old.noDisponible || [];
       data.carta   = (old.carta && old.carta.length) ? old.carta : data.carta;
       data.seq     = old.seq || (Math.max(0, ...data.orders.map(o=>o.id)) + 1);
@@ -86,6 +87,10 @@ function LocalStore(){
     archivarDia(){
       const reales = data.orders.filter(o=>!o.practica);
       data.historial = (data.historial || []).concat(reales);
+      // archivar también la caja del día (fondo, contado, gastos, cierre) para el historial
+      if(data.caja && data.caja.fecha){
+        data.cajas = (data.cajas || []).filter(x => x.fecha !== data.caja.fecha).concat([clean(data.caja)]);
+      }
       data.orders = []; data.seq = 1;
       persist(); notify();
     },
@@ -96,7 +101,7 @@ function LocalStore(){
 function FirebaseStore(cfg){
   firebase.initializeApp(cfg);
   const db = firebase.database();
-  const data = { orders:[], compras:[], tareas:[], recetas:[], caja:null, modo:'real', historial:[], noDisponible:[], carta:[] };
+  const data = { orders:[], compras:[], tareas:[], recetas:[], caja:null, modo:'real', historial:[], cajas:[], noDisponible:[], carta:[] };
   let notify = () => {};
 
   function listen(){
@@ -117,6 +122,11 @@ function FirebaseStore(cfg){
     db.ref('historial').on('value', snap => {
       const v = snap.val();
       data.historial = Array.isArray(v) ? v.filter(Boolean) : Object.values(v || {});
+      notify();
+    });
+    db.ref('cajas').on('value', snap => {
+      const v = snap.val();
+      data.cajas = Array.isArray(v) ? v.filter(Boolean) : Object.values(v || {});
       notify();
     });
     // sembrar tareas y recetas la primera vez
@@ -157,7 +167,13 @@ function FirebaseStore(cfg){
     archivarDia(){
       const reales = data.orders.filter(o=>!o.practica).map(clean);
       const hist = (data.historial || []).concat(reales);
-      data.historial = hist; data.orders = []; notify();
+      data.historial = hist; data.orders = [];
+      // archivar también la caja del día (fondo, contado, gastos, cierre) para el historial
+      if(data.caja && data.caja.fecha){
+        data.cajas = (data.cajas || []).filter(x => x.fecha !== data.caja.fecha).concat([clean(data.caja)]);
+        db.ref('cajas').set(data.cajas.map(clean));
+      }
+      notify();
       db.ref('historial').set(hist.map(clean));
       db.ref('orders').remove(); db.ref('seq').set(0);
     },
