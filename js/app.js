@@ -160,6 +160,12 @@ function ventasMetodo(metodo){
   return state.orders.filter(o=>!o.anulada && !o.practica && !esFantasma(o)).reduce((s,o)=>
     s + pagosDe(o).filter(p=>p.metodo===metodo && !p.noCaja).reduce((a,p)=>a+(p.monto||0),0), 0);
 }
+// GASTOS / SALIDAS DE CAJA (v16): viven dentro de la caja del día (caja.gastos), así se
+// reinician solos al abrir la caja del día siguiente y quedan en el cierre. Restan del esperado.
+function gastosDeCaja(){ const c = state.caja; return (c && Array.isArray(c.gastos)) ? c.gastos : []; }
+function gastosMetodo(metodo){
+  return gastosDeCaja().filter(g=>!g.anulado && g.metodo===metodo).reduce((s,g)=>s+(g.monto||0),0);
+}
 
 function bannerTxt(){
   return store.mode === 'firebase'
@@ -834,16 +840,20 @@ function reabrirCaja(){ store.saveCaja({ ...state.caja, estado:'abierta' }); toa
 function rCaja(){
   const c = state.caja, hoy = dayKey();
   const vef = ventasMetodo('efectivo'), vya = ventasMetodo('yape');
+  const gEf = gastosMetodo('efectivo'), gYa = gastosMetodo('yape');
   const dtxt = d => Math.abs(d) < 0.005 ? 'cuadra ✓' : (d > 0 ? 'sobra ' + money(d) : 'falta ' + money(-d));
+  const filaGastos = (gEf || gYa) ? `<div class="cajarow" style="color:var(--rojo)"><span>− Gastos / salidas</span><span>💵 ${money(gEf)} · 📱 ${money(gYa)}</span></div>` : '';
   if(c && c.estado==='abierta' && c.fecha===hoy){
-    const espEf = c.fondoEfectivo + vef, espYa = c.fondoYape + vya;
+    const espEf = c.fondoEfectivo + vef - gEf, espYa = c.fondoYape + vya - gYa;
     if(!cierreMode){
       return `<div class="cajabox abierta">
         <div class="cajah">🟢 Caja abierta</div>
         <div class="cajarow"><span>Fondo inicial</span><span>💵 ${money(c.fondoEfectivo)} · 📱 ${money(c.fondoYape)}</span></div>
         <div class="cajarow"><span>Ventas hasta ahora</span><span>💵 ${money(vef)} · 📱 ${money(vya)}</span></div>
+        ${filaGastos}
         <div class="cajarow" style="font-weight:800"><span>Esperado en caja</span><span>💵 ${money(espEf)} · 📱 ${money(espYa)}</span></div>
         <div style="font-size:11px;color:var(--gris);margin-top:4px">Abrió ${esc(c.aperturaPor)||'—'} · ${hhmm(c.aperturaTs)}</div>
+        ${gEf||gYa?`<div style="font-size:11px;color:var(--gris)">Los gastos se registran en Gestión → 💸 Gastos.</div>`:''}
         <button class="csvbtn" style="background:var(--rojo);margin-top:8px" onclick="cierreMode=true;render()">Cerrar caja</button>
       </div>`;
     }
@@ -852,6 +862,7 @@ function rCaja(){
       <div style="font-size:12px;color:var(--cafemed);margin-bottom:6px">Cuenta el dinero real y regístralo:</div>
       <div class="fieldrow"><input id="cierreEf" type="number" inputmode="decimal" placeholder="Efectivo contado (S/)"></div>
       <div class="fieldrow"><input id="cierreYa" type="number" inputmode="decimal" placeholder="Yape contado (S/)"></div>
+      ${filaGastos}
       <div class="cajarow"><span>Esperado</span><span>💵 ${money(espEf)} · 📱 ${money(espYa)}</span></div>
       <div style="font-size:12px;color:#7A4A12;background:#FBF3E7;border-radius:8px;padding:8px;margin:6px 0">📦 Al confirmar, la caja se cierra <b>y el día se archiva</b> al historial (las cuentas dejan de aparecer en el registro de hoy).</div>
       <button class="sendbtn" onclick="cerrarCaja()">Confirmar cierre y archivar día</button>
@@ -862,9 +873,10 @@ function rCaja(){
     // usar el snapshot de ventas guardado al cerrar (los pedidos ya se archivaron)
     const vefC = (typeof c.ventasEfectivo==='number') ? c.ventasEfectivo : vef;
     const vyaC = (typeof c.ventasYape==='number') ? c.ventasYape : vya;
-    const espEf = c.fondoEfectivo + vefC, espYa = c.fondoYape + vyaC;
+    const espEf = c.fondoEfectivo + vefC - gEf, espYa = c.fondoYape + vyaC - gYa;
     return `<div class="cajabox cerrada">
       <div class="cajah">🔒 Caja cerrada hoy</div>
+      ${filaGastos}
       <div class="cajarow"><span>Efectivo</span><span>esp. ${money(espEf)} · cont. ${money(c.efectivoContado)} · <b>${dtxt((c.efectivoContado||0)-espEf)}</b></span></div>
       <div class="cajarow"><span>Yape</span><span>esp. ${money(espYa)} · cont. ${money(c.yapeContado)} · <b>${dtxt((c.yapeContado||0)-espYa)}</b></span></div>
       <div style="font-size:11px;color:var(--gris);margin-top:4px">Cerró ${esc(c.cierrePor)||'—'} · ${hhmm(c.cierreTs)}</div>
@@ -1492,7 +1504,7 @@ function entregarTodo(oid){
   o.items.forEach(i=>{ if(i.estado!=='anulado'){ if(!i.tsListo) i.tsListo = Date.now(); i.estado='entregado'; i.tsEnt = Date.now(); } });
   store.saveOrder(o); toast('Comanda #'+oid+' cerrada'); render();
 }
-function csvDe(orders, filename){
+function csvDe(orders, filename, gastos){
   let rows = [['Comanda','Tipo','Mesa/Cliente','Mesero','Modo','Fecha','Hora','Producto','Cant','Detalle','Precio','Subtotal','Estado','MinSalida','Pagos','BoletaDNI','BoletaNombre','BoletaContacto','RegistroManual','Descuento']];
   (orders||[]).forEach(o=>{
     const pagosTxt = pagosDe(o).map(p=>p.metodo+':'+p.monto+(p.noCaja?'(noCaja)':'')).join(' | ');
@@ -1506,12 +1518,20 @@ function csvDe(orders, filename){
         o.descuento?((o.descuento.tipo==='pct'?o.descuento.valor+'%':'S/'+o.descuento.valor)+' = -'+descMonto(o)):'']);
     });
   });
+  if(gastos && gastos.length){
+    rows.push([]);
+    rows.push(['GASTOS / SALIDAS DE CAJA']);
+    rows.push(['Monto','Metodo','Concepto','Por','Fecha','Hora','Estado']);
+    gastos.forEach(g=>{ const d = new Date(g.ts);
+      rows.push([g.monto, g.metodo, (g.concepto||'').replace(/,/g,';'), (g.por||'').replace(/,/g,';'),
+        d.toLocaleDateString(), hhmm(g.ts), g.anulado?('anulado por '+(g.anulado.por||'')):'vigente']); });
+  }
   const txt = rows.map(r=>r.join(',')).join('\n');
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob(['﻿'+txt], {type:'text/csv;charset=utf-8'}));
   a.download = filename; a.click();
 }
-function csv(){ csvDe(state.orders, 'comandas_pueblo_cafe.csv'); }
+function csv(){ csvDe(state.orders, 'comandas_pueblo_cafe.csv', gastosDeCaja()); }
 
 /* ---------- GESTIÓN DEL CAFÉ ---------- */
 let gtab = 'compras';   // compras | tareas | recetas
@@ -1522,6 +1542,7 @@ function rGestion(){
     <button class="${gtab==='disp'?'act':''}" onclick="setGtab('disp')">🍽 Disponibilidad${nOff?` (${nOff})`:''}</button>
     ${esAdmin()?`<button class="${gtab==='carta'?'act':''}" onclick="setGtab('carta')">🍔 Carta</button>`:''}
     <button class="${gtab==='compras'?'act':''}" onclick="setGtab('compras')">🛒 Lista de compras</button>
+    <button class="${gtab==='gastos'?'act':''}" onclick="setGtab('gastos')">💸 Gastos</button>
     <button class="${gtab==='tareas'?'act':''}" onclick="setGtab('tareas')">🔑 Apertura y cierre</button>
     <button class="${gtab==='recetas'?'act':''}" onclick="setGtab('recetas')">📖 Recetas</button>
   </div>`;
@@ -1529,6 +1550,7 @@ function rGestion(){
   if(gtab==='disp') body = rDisponibilidad();
   else if(gtab==='carta' && esAdmin()) body = rCartaEditor();
   else if(gtab==='compras') body = rCompras();
+  else if(gtab==='gastos') body = rGastos();
   else if(gtab==='tareas') body = rTareas();
   else body = rRecetas();
   return rHeader('Gestión del Café','GESTIÓN') + `<main>${tabs}${body}</main>`;
@@ -1687,6 +1709,62 @@ function addCompra(){
 function toggleCompra(id){ const c = state.compras.find(x=>x.id===id); if(c){ c.hecho = !c.hecho; store.saveList('compras', state.compras); render(); } }
 function delCompra(id){ state.compras = state.compras.filter(x=>x.id!==id); store.saveList('compras', state.compras); render(); }
 
+/* ---------- GASTOS / SALIDAS DE CAJA (solo admin registra/anula) ---------- */
+let armGasto = null;   // id de gasto con anulación armada (doble toque)
+function rGastos(){
+  const c = state.caja, hoy = dayKey();
+  const abierta = !!(c && c.estado==='abierta' && c.fecha===hoy);
+  const gastos = gastosDeCaja();
+  const gEf = gastosMetodo('efectivo'), gYa = gastosMetodo('yape');
+  const lista = gastos.map(g=>{
+    const arm = armGasto===g.id;
+    const anTag = g.anulado ? ' <span class="badge b-anulado">ANULADO</span>' : '';
+    const anBtn = (esAdmin() && !g.anulado)
+      ? `<button class="anularbtn mini ${arm?'armado':''}" onclick="anularGasto('${g.id}')">${arm?'¿Anular? Toca de nuevo':'Anular'}</button>` : '';
+    return `<div class="citem" style="align-items:center;${g.anulado?'opacity:.55':''}">
+      <div style="flex:1"><b>${money(g.monto)}</b> · ${g.metodo==='yape'?'📱 Yape':'💵 Efectivo'}${anTag}
+        <div class="det">${esc(g.concepto)}${g.por?` · ${esc(g.por)}`:''} · ${hhmm(g.ts)}${g.anulado?` · anulado por ${esc(g.anulado.por)}`:''}</div>
+      </div>${anBtn}</div>`;
+  }).join('');
+  let form;
+  if(!esAdmin()){
+    form = `<div style="font-size:12.5px;color:var(--cafemed)">Solo el administrador registra gastos. Aquí puedes ver los del día.</div>`;
+  } else if(!abierta){
+    form = `<div style="font-size:12.5px;color:#7A4A12;background:#FBF3E7;border-radius:8px;padding:8px">Abre la caja del día para registrar gastos.</div>`;
+  } else {
+    form = `<div class="fieldrow"><input id="gastoMonto" type="number" inputmode="decimal" placeholder="Monto (S/)" style="flex:1">
+        <select id="gastoMetodo" style="padding:10px;border-radius:8px;border:1px solid var(--cafeclaro)"><option value="efectivo">💵 Efectivo</option><option value="yape">📱 Yape</option></select></div>
+      <div class="fieldrow"><input id="gastoConcepto" placeholder="Concepto (ej. gas, verduras, hielo)">
+        <button class="stbtn st-listo" style="padding:10px 18px" onclick="addGasto()">Registrar</button></div>`;
+  }
+  return `
+    <p style="font-size:13px;color:var(--cafemed)">Salidas de dinero de la caja (compras, gas, etc.). Restan del efectivo/Yape esperado en el cuadre. No se borran: se anulan y quedan marcadas (auditoría).</p>
+    <div class="regtot" style="background:var(--cafemed);font-size:13px"><span>💵 Gastos efectivo: ${money(gEf)}</span><span>📱 Gastos Yape: ${money(gYa)}</span></div>
+    ${form}
+    ${lista || '<div class="empty">Sin gastos registrados hoy.</div>'}`;
+}
+function addGasto(){
+  if(!esAdmin()){ toast('Solo el administrador registra gastos'); return; }
+  const c = state.caja;
+  if(!(c && c.estado==='abierta' && c.fecha===dayKey())){ toast('Abre la caja del día para registrar un gasto'); return; }
+  const monto = parseFloat((document.getElementById('gastoMonto')||{}).value);
+  const metodo = ((document.getElementById('gastoMetodo')||{}).value === 'yape') ? 'yape' : 'efectivo';
+  const concepto = ((document.getElementById('gastoConcepto')||{}).value || '').trim();
+  if(isNaN(monto) || monto<=0){ toast('Ingresa un monto válido'); return; }
+  if(!concepto){ toast('Escribe el concepto del gasto'); return; }
+  c.gastos = Array.isArray(c.gastos) ? c.gastos : [];
+  c.gastos.unshift({ id:uniqueId('g'), monto:Math.round(monto*100)/100, metodo, concepto, por: user?user.nombre:'', ts: Date.now() });
+  store.saveCaja(c); toast('Gasto registrado ✓'); render();
+}
+function anularGasto(id){
+  if(!esAdmin()){ toast('Solo el administrador'); return; }
+  if(armGasto!==id){ armGasto = id; render(); setTimeout(()=>{ if(armGasto===id){armGasto=null; render();} }, 3500); return; }
+  armGasto = null;
+  const c = state.caja; const g = c && Array.isArray(c.gastos) ? c.gastos.find(x=>x.id===id) : null;
+  if(g && !g.anulado){ g.anulado = { por: user?user.nombre:'', ts: Date.now() }; store.saveCaja(c); toast('Gasto anulado'); }
+  render();
+}
+
 function rTareas(){
   const bloque = (turno, titulo) => {
     const ts = state.tareas.filter(t=>t.turno===turno);
@@ -1745,7 +1823,7 @@ function addReceta(){
 function delReceta(id){ state.recetas = state.recetas.filter(x=>x.id!==id); store.saveList('recetas', state.recetas); render(); }
 
 /* ---------- NAV ---------- */
-function go(v){ view = v; modal = null; customModal = null; chkModal = null; cuentaId = null; recetaModal = null; splitModal = null; armAnular = null; armAnularItem = null; armBorrarP = false; armArchivar = false; addTargetId = null; cierreMode = false; boletaEdit = false; histDay = null; quitarMode = false; manualAddModal = null; ventaModal = null; snapModal = null; cartaModal = null; armRetirar = null; mesaModal = null; unirModal = null; descModal = null; armEliminar = null; render(); }
+function go(v){ view = v; modal = null; customModal = null; chkModal = null; cuentaId = null; recetaModal = null; splitModal = null; armAnular = null; armAnularItem = null; armBorrarP = false; armArchivar = false; addTargetId = null; cierreMode = false; boletaEdit = false; histDay = null; quitarMode = false; manualAddModal = null; ventaModal = null; snapModal = null; cartaModal = null; armRetirar = null; mesaModal = null; unirModal = null; descModal = null; armEliminar = null; armGasto = null; render(); }
 window.go = go; window.goCocina = goCocina; window.setTab = setTab; window.openItem = openItem;
 window.pick = pick; window.addCart = addCart; window.rmCart = rmCart; window.sendOrder = sendOrder;
 window.setEstado = setEstado; window.openChk = openChk; window.deliver = deliver; window.csv = csv;
@@ -1760,6 +1838,7 @@ window.openVentaManual = openVentaManual; window.vmAddItem = vmAddItem; window.v
 window.toggleEntrega = toggleEntrega; window.anularItem = anularItem; window.openChkMulti = openChkMulti;
 window.setPago = setPago; window.setGtab = setGtab;
 window.addCompra = addCompra; window.toggleCompra = toggleCompra; window.delCompra = delCompra; window.clearCompras = clearCompras;
+window.addGasto = addGasto; window.anularGasto = anularGasto;
 window.verReceta = verReceta; window.toggleAllListos = toggleAllListos;
 window.addTarea = addTarea; window.toggleTarea = toggleTarea; window.delTarea = delTarea; window.resetTareas = resetTareas;
 window.addReceta = addReceta; window.delReceta = delReceta;
