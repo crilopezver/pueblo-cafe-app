@@ -1701,19 +1701,42 @@ function rDisponibilidad(){
     ${nOff?`<button class="csvbtn" style="background:var(--verde)" onclick="resetDisp()">✓ Marcar TODO disponible (inicio de día)</button>`:'<div class="empty" style="padding:12px">Todo disponible por ahora. 🎉</div>'}
     ${bloques}`;
 }
+// fecha+hora en horario de Perú (America/Lima), independiente del reloj del dispositivo
+function fechaHoraPeru(ts){
+  if(!ts) return '';
+  try{ return new Date(ts).toLocaleString('es-PE', {timeZone:'America/Lima', day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit', hour12:true}); }
+  catch(e){ return new Date(ts).toLocaleString(); }
+}
+function haceTexto(ts){
+  if(!ts) return '';
+  const min = Math.floor((Date.now()-ts)/60000);
+  if(min < 1) return 'recién';
+  if(min < 60) return 'hace '+min+' min';
+  const h = Math.floor(min/60);
+  if(h < 24) return 'hace '+h+' h';
+  const d = Math.floor(h/24);
+  return 'hace '+d+' día'+(d>1?'s':'');
+}
 function rCompras(){
-  const items = state.compras.map(c=>`
-    <div class="citem" style="align-items:center">
+  const lista = state.compras.slice().sort((a,b)=>(b.ts||0)-(a.ts||0));   // más reciente arriba
+  const items = lista.map(c=>{
+    const rep = c.ts ? ` · ${fechaHoraPeru(c.ts)} (${haceTexto(c.ts)})` : '';
+    const vieja = !c.hecho && c.ts && (Date.now()-c.ts) >= 2*86400000;      // pendiente hace 2+ días
+    const compradoLine = (c.hecho && c.compradoTs)
+      ? `<div class="det" style="color:var(--verde)">✔ comprado por ${esc(c.compradoPor||'—')} · ${fechaHoraPeru(c.compradoTs)}</div>` : '';
+    return `<div class="citem" style="align-items:center;${vieja?'border-left:5px solid var(--rojo)':''}">
       <label style="display:flex;align-items:center;gap:10px;flex:1;${c.hecho?'opacity:.5;text-decoration:line-through':''}">
         <input type="checkbox" style="width:20px;height:20px" ${c.hecho?'checked':''} onclick="toggleCompra('${c.id}')">
-        <span><b>${esc(c.txt)}</b>${c.por?`<div class="det">reportado por ${esc(c.por)}</div>`:''}</span>
+        <span><b>${esc(c.txt)}</b>${vieja?` <span class="badge b-pendiente">⏳ pendiente ${haceTexto(c.ts)}</span>`:''}
+          <div class="det">reportado por ${esc(c.por||'—')}${rep}</div>${compradoLine}</span>
       </label>
       <button class="rm" onclick="delCompra('${c.id}')">✕</button>
-    </div>`).join('');
+    </div>`;
+  }).join('');
   return `
-    <p style="font-size:13px;color:var(--cafemed)">Cualquiera del equipo puede reportar lo que falte comprar. Se marca ☑ cuando ya se compró.</p>
+    <p style="font-size:13px;color:var(--cafemed)">Cualquiera del equipo puede reportar lo que falte comprar; se guarda la fecha y hora (Perú) del reporte. Se marca ☑ cuando ya se compró.</p>
     <div class="fieldrow"><input id="compraTxt" placeholder="¿Qué falta comprar? (ej. azúcar rubia)"></div>
-    <div class="fieldrow"><input id="compraPor" placeholder="¿Quién reporta? (tu nombre)">
+    <div class="fieldrow"><input id="compraPor" placeholder="¿Quién reporta? (tu nombre)" value="${esc(user?user.nombre:'')}">
       <button class="stbtn st-listo" style="padding:10px 18px" onclick="addCompra()">Agregar</button></div>
     ${items || '<div class="empty">No hay nada pendiente de comprar. 🎉</div>'}
     ${state.compras.some(c=>c.hecho)?`<button class="csvbtn" style="background:var(--verde)" onclick="clearCompras()">🧹 Limpiar comprados (${state.compras.filter(c=>c.hecho).length})</button>`:''}`;
@@ -1725,12 +1748,20 @@ function clearCompras(){
 }
 function addCompra(){
   const txt = (document.getElementById('compraTxt')||{}).value || '';
-  const por = (document.getElementById('compraPor')||{}).value || '';
+  let por = (document.getElementById('compraPor')||{}).value || '';
   if(!txt.trim()){ toast('Escribe qué falta comprar'); return; }
-  state.compras.unshift({id:uniqueId('c'), txt:txt.trim(), por:por.trim(), hecho:false});
+  if(!por.trim() && user) por = user.nombre;   // autollenar con el usuario en sesión
+  state.compras.unshift({id:uniqueId('c'), txt:txt.trim(), por:por.trim(), hecho:false, ts:Date.now()});
   store.saveList('compras', state.compras); toast('Agregado a la lista de compras'); render();
 }
-function toggleCompra(id){ const c = state.compras.find(x=>x.id===id); if(c){ c.hecho = !c.hecho; store.saveList('compras', state.compras); render(); } }
+function toggleCompra(id){
+  const c = state.compras.find(x=>x.id===id);
+  if(!c) return;
+  c.hecho = !c.hecho;
+  if(c.hecho){ c.compradoPor = user?user.nombre:''; c.compradoTs = Date.now(); }   // registrar la compra
+  else { delete c.compradoPor; delete c.compradoTs; }
+  store.saveList('compras', state.compras); render();
+}
 function delCompra(id){ state.compras = state.compras.filter(x=>x.id!==id); store.saveList('compras', state.compras); render(); }
 
 /* ---------- GASTOS / SALIDAS DE CAJA (solo admin registra/anula) ---------- */
