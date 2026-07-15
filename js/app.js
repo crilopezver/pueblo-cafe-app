@@ -38,6 +38,7 @@ let armBorrarP = false;     // borrar pedidos de práctica (doble toque)
 let armArchivar = false;    // archivar el día (doble toque)
 let histDay = null;         // día expandido en el historial (solo lectura)
 let quitarMode = false;     // en la cuenta: sección "quitar ítem" desplegada
+let quitarMotivo = '';      // motivo escrito para la devolución (persiste entre renders)
 let manualAddModal = null;  // agregar ítem servido a una cuenta (admin) {oid, desc, precio, qty, notas}
 let ventaModal = null;      // registrar venta manual completa (admin)
 let snapModal = null;       // ver versión anterior de una cuenta editada {oid}
@@ -376,7 +377,7 @@ function toggleEntrega(uid){
   if(selEntrega.has(uid)) selEntrega.delete(uid); else selEntrega.add(uid);
   render();
 }
-function anularItem(oid, uid){
+function anularItem(oid, uid, motivo){
   const key = {oid, uid};
   if(!(armAnularItem && armAnularItem.oid===oid && armAnularItem.uid===uid)){
     armAnularItem = key; render();
@@ -385,9 +386,27 @@ function anularItem(oid, uid){
   }
   const o = state.orders.find(x=>x.id===oid); if(!o) return;
   const it = o.items.find(i=>i.uid===uid); if(!it) return;
-  it.estado = 'anulado'; selEntrega.delete(uid);
+  it.estado = 'anulado';
+  // AUDITORÍA: quién anuló/devolvió, cuándo y por qué (uso interno, no sale en el imprimible)
+  it.anulacion = { por: user?user.nombre:'', ts: Date.now(), motivo: (motivo||'').trim() };
+  selEntrega.delete(uid);
   if(o.items.every(i=>i.estado==='anulado')) o.anulada = true;
   armAnularItem = null; store.saveOrder(o); toast('Ítem anulado' + (o.anulada?' — pedido completo anulado':'')); render();
+}
+/* Devolver un ítem YA SERVIDO/entregado que el cliente no se llevó, antes de cobrar.
+   Doble toque + motivo obligatorio. Reusa anularItem (mismo rastro con {por,ts,motivo}). */
+function devolverItem(oid, uid){
+  const armed = armAnularItem && armAnularItem.oid===oid && armAnularItem.uid===uid;
+  if(armed){
+    const mv = (quitarMotivo||'').trim();
+    if(!mv){ toast('Escribe el motivo de la devolución'); return; }
+    anularItem(oid, uid, mv);
+    quitarMotivo = '';
+    return;
+  }
+  // primer toque: captura lo escrito y arma el doble toque
+  const el = document.getElementById('devMotivo'); if(el) quitarMotivo = el.value;
+  anularItem(oid, uid);
 }
 function tipoTxt(o){
   return (o.tipo==='llevar'?'🥡 LLEVAR · ':'') + esc(o.mesa||'—');
@@ -968,7 +987,7 @@ function rRegistro(){
     return `<div class="regcard${o.practica?' practcard':''}"><b>#${o.id}</b> · ${tipoTxt(o)} ${practTag(o)}${manTag}${o.mesero?' · '+esc(o.mesero):''} · ${new Date(o.ts).toLocaleDateString()} ${hhmm(o.ts)}
       ${badge}${pagoBadge}<br>
       <span style="color:var(--cafemed)">${resumenItems(o.items)}</span>
-      ${anulados && !o.anulada?`<div style="font-size:11.5px;color:var(--rojo)">${anulados} ítem(s) anulado(s), descontado(s) del total</div>`:''}
+      ${anulados?`<div style="font-size:11.5px;color:var(--rojo)">↩️ ${anulados} ítem(s) devuelto(s)/anulado(s): ${o.items.filter(i=>i.estado==='anulado').map(i=>i.qty+'× '+esc(i.name)+(i.anulacion&&i.anulacion.motivo?' ('+esc(i.anulacion.motivo)+(i.anulacion.por?' · '+esc(i.anulacion.por):'')+')':'')).join(', ')}${o.anulada?'':' — descontado(s) del total'}</div>`:''}
       ${sal!==null && !o.anulada ? `<div style="font-size:12px;color:var(--verde);font-weight:700">⏱ Salió en ${sal} min</div>`:''}
       <div style="font-weight:800;color:var(--acento);margin-top:4px">${money(t)}
         ${!o.anulada?`<button class="stbtn st-preparando" style="float:right" onclick="cuentaId=${o.id};render()">Ver cuenta 🧾</button>`:''}
@@ -1123,7 +1142,7 @@ function rCuenta(){
         <button class="add" onclick="guardarBoleta(${o.id})">Guardar datos de boleta</button>
         <button class="cls" onclick="toggleBoleta()">Cancelar</button></div>`
     : `<button class="splitbtn" style="background:var(--cafemed)" onclick="toggleBoleta()">🧾 ¿Desea boleta? Registrar datos del cliente</button>`;
-  return `<div class="ovl" onclick="if(event.target===this){cuentaId=null;boletaEdit=false;quitarMode=false;render()}"><div class="modal">
+  return `<div class="ovl" onclick="if(event.target===this){cuentaId=null;boletaEdit=false;quitarMode=false;quitarMotivo='';render()}"><div class="modal">
     <div class="ticket" id="ticketPrint">
       <div style="text-align:center;font-weight:800">PUEBLO CAFE BAR</div>
       <div style="text-align:center;font-size:11px">Sabor, tradición y buenos momentos</div>
@@ -1163,21 +1182,28 @@ function rCuenta(){
     ${boletaSection}
     <button class="add" onclick="window.print()">🖨 Imprimir / guardar PDF</button>
     ${pendientesEntrega?`<button class="splitbtn" style="background:var(--cafemed)" onclick="entregarTodo(${o.id})">Marcar todo entregado</button>`:''}
-    <button class="cls" onclick="cuentaId=null;boletaEdit=false;quitarMode=false;render()">Cerrar</button>
+    <button class="cls" onclick="cuentaId=null;boletaEdit=false;quitarMode=false;quitarMotivo='';render()">Cerrar</button>
   </div></div>`;
 }
-/* ---------- QUITAR ÍTEM ANTES DE COBRAR (anulación con rastro) ---------- */
+/* ---------- DEVOLVER / QUITAR ÍTEM ANTES DE COBRAR (con rastro interno) ----------
+   Sirve incluso para ítems ya ENTREGADOS que el cliente no se llevó (ej. un agua que
+   no abrió). Solo mientras la cuenta NO tenga pagos. El ítem queda ANULADO: no se cobra
+   y NO aparece en el ticket imprimible del cliente (groupCuenta excluye anulados). */
 function rQuitarSec(o){
   const puedeQuitar = !o.anulada && pagadoDe(o) === 0 && o.items.some(i=>i.estado!=='anulado');
-  if(!puedeQuitar) return '';
-  if(!quitarMode) return `<button class="cls" style="display:block;width:100%" onclick="quitarMode=true;render()">➖ Quitar un ítem que no se llevó (antes de cobrar)…</button>`;
+  // Rastro de lo ya devuelto (uso interno; va FUERA del ticket imprimible)
+  const devueltos = o.items.filter(i=>i.estado==='anulado');
+  const devList = devueltos.length ? `<div class="manualbadge" style="border-color:var(--rojo);background:#FBEAEA;color:#7A1E1E">↩️ Devuelto(s) — no se cobran (uso interno): ${devueltos.map(i=>i.qty+'× '+esc(i.name)+(i.anulacion?` · ${esc(i.anulacion.motivo||'sin motivo')}${i.anulacion.por?' · '+esc(i.anulacion.por):''}${i.anulacion.ts?' · '+hhmm(i.anulacion.ts):''}`:'')).join(' — ')}</div>` : '';
+  if(!puedeQuitar) return devList;
+  if(!quitarMode) return devList + `<button class="splitbtn" style="background:var(--rojo)" onclick="quitarMode=true;render()">↩️ Devolver un ítem que no se llevó (antes de cobrar)</button>`;
   const rows = o.items.filter(i=>i.estado!=='anulado').map(i=>{
     const arm = armAnularItem && armAnularItem.oid===o.id && armAnularItem.uid===i.uid;
     return `<div class="uline"><span>${i.qty}× ${esc(i.name)} <span style="color:var(--acento)">${money(i.price*i.qty)}</span></span>
-      <button class="anularbtn mini ${arm?'armado':''}" style="margin:0" onclick="anularItem(${o.id},${i.uid})">${arm?'¿Seguro? Toca de nuevo':'Quitar (anular)'}</button></div>`;
+      <button class="anularbtn mini ${arm?'armado':''}" style="margin:0" onclick="devolverItem(${o.id},${i.uid})">${arm?'¿Seguro? Toca de nuevo':'Devolver'}</button></div>`;
   }).join('');
-  return `<div class="boletabox">
-    <div class="gl" style="font-weight:700;color:var(--cafemed)">Quitar ítem — queda ANULADO (tachado), no se borra</div>
+  return devList + `<div class="boletabox">
+    <div class="gl" style="font-weight:700;color:var(--cafemed)">Devolver ítem — queda ANULADO (no se cobra ni sale en el ticket del cliente)</div>
+    <div class="fieldrow"><input id="devMotivo" placeholder="Motivo (obligatorio, ej. no la abrió)" value="${quitarMotivo?esc(quitarMotivo):''}" oninput="quitarMotivo=this.value"></div>
     ${rows}
     <button class="cls" onclick="quitarMode=false;render()">Listo</button></div>`;
 }
@@ -1536,8 +1562,12 @@ function csvDe(orders, filename, gastos){
     o.items.forEach(i=>{
       const d = new Date(o.ts);
       const man = o.manual ? 'cuenta manual' + (o.manualPor?' ('+o.manualPor+')':'') : (i.manual ? 'item manual' + (i.manualPor?' ('+i.manualPor+')':'') : '');
+      let estCell = o.anulada ? 'anulado' : i.estado;
+      if(i.estado==='anulado' && i.anulacion && i.anulacion.motivo){
+        estCell = 'anulado: ' + i.anulacion.motivo + (i.anulacion.por?' ('+i.anulacion.por+')':'');
+      }
       rows.push([o.id, o.tipo==='llevar'?'Llevar':'Mesa', o.mesa||'', o.mesero||'', o.practica?'practica':'real', d.toLocaleDateString(), hhmm(o.ts), i.name, i.qty,
-        modsTxt(i).replace(/,/g,';'), i.price, i.price*i.qty, o.anulada?'anulado':i.estado,
+        modsTxt(i).replace(/,/g,';'), i.price, i.price*i.qty, (''+estCell).replace(/,/g,';'),
         i.tsListo?elapsedMin(pedTs(o,i),i.tsListo):'', pagosTxt, b.dni||'', (b.nombre||'').replace(/,/g,';'), b.contacto||'', man.replace(/,/g,';'),
         o.descuento?((o.descuento.tipo==='pct'?o.descuento.valor+'%':'S/'+o.descuento.valor)+' = -'+descMonto(o)):'']);
     });
@@ -1890,7 +1920,7 @@ window.openCustom = openCustom; window.addCustom = addCustom;
 window.openManualAdd = openManualAdd; window.addManualItem = addManualItem; window.openSnap = openSnap;
 window.addProd = addProd; window.editProd = editProd; window.retirarProd = retirarProd; window.restaurarProd = restaurarProd; window.guardarProd = guardarProd;
 window.openVentaManual = openVentaManual; window.vmAddItem = vmAddItem; window.vmRmItem = vmRmItem; window.guardarVentaManual = guardarVentaManual;
-window.toggleEntrega = toggleEntrega; window.anularItem = anularItem; window.openChkMulti = openChkMulti;
+window.toggleEntrega = toggleEntrega; window.anularItem = anularItem; window.devolverItem = devolverItem; window.openChkMulti = openChkMulti;
 window.setPago = setPago; window.setGtab = setGtab;
 window.addCompra = addCompra; window.toggleCompra = toggleCompra; window.delCompra = delCompra; window.clearCompras = clearCompras;
 window.addGasto = addGasto; window.anularGasto = anularGasto;
